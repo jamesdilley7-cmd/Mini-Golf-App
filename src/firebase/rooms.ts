@@ -8,6 +8,7 @@ import {
   update,
 } from 'firebase/database';
 import { getCourseById } from '../game/courses';
+import { BALL_RADIUS } from '../game/physics';
 import { db } from './config';
 import { BallState, MAX_STROKES_PER_HOLE, PLAYER_COLORS, RoomState } from '../types';
 
@@ -132,8 +133,10 @@ function ballsForHole(playerIds: string[], teeX: number, teeY: number) {
     balls[id] = {
       x: teeX,
       y: teeY,
+      z: BALL_RADIUS,
       vx: 0,
       vy: 0,
+      vz: 0,
       moving: false,
       sunk: false,
       retired: false,
@@ -165,7 +168,7 @@ export async function startGame(room: RoomState): Promise<void> {
 export function streamBallPosition(
   code: string,
   playerId: string,
-  ball: Pick<BallState, 'x' | 'y' | 'vx' | 'vy' | 'moving'>
+  ball: Pick<BallState, 'x' | 'y' | 'z' | 'vx' | 'vy' | 'vz' | 'moving'>
 ) {
   if (!db) return;
   update(ref(db, `rooms/${code}/balls/${playerId}`), {
@@ -181,6 +184,7 @@ interface ResolveShotArgs {
   playerId: string;
   finalX: number;
   finalY: number;
+  finalZ: number;
   strokes: number;
   sunk: boolean;
 }
@@ -190,6 +194,7 @@ export async function resolveShot({
   playerId,
   finalX,
   finalY,
+  finalZ,
   strokes,
   sunk,
 }: ResolveShotArgs): Promise<void> {
@@ -201,8 +206,10 @@ export async function resolveShot({
   updates[`balls/${playerId}`] = {
     x: finalX,
     y: finalY,
+    z: finalZ,
     vx: 0,
     vy: 0,
+    vz: 0,
     moving: false,
     sunk,
     retired,

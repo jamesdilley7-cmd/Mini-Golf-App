@@ -14,18 +14,22 @@ code, and putt through 3 courses (6 holes each) with friends in real time.
 - Scores are tracked per hole across all 18 holes; lowest total wins.
 - Some holes have **water hazards**: roll into one and stop, and you take a
   1-stroke penalty and your ball is replaced where the shot started, to retry.
-  **Ramps** (orange boost pads) give the ball a speed kick in whatever
-  direction it's already moving, often used to help carry a well-powered shot
-  across a water gap — so the power of your drag really matters.
+  **Ramps** are real sloped colliders now — roll onto one with enough speed
+  and the ball climbs the slope (slowing down going up, speeding up coming
+  down), and a fast enough shot can launch off the top edge airborne, often
+  used to help carry a well-powered shot across a water gap.
 
-Physics (gravity-free top-down rolling, wall bounces, friction) are simulated
-with [matter-js](https://brm.io/matter-js/) entirely in a flat 2D `(x, y)`
-plane — there's no real elevation. The course is *rendered* in 3D (see below),
-but that's a visual layer on top: physics, hazard detection, ramp boosts, and
-Firebase multiplayer sync all stay 2D. Course geometry (`x`, `y`, `width`,
-`height`, `angle`, etc.) in `src/game/courses/*` is unitless 2D game-plane
-data, not 3D scene data — don't add elevation/`z` fields to it expecting
-physics to use them.
+Physics are simulated in real 3D with
+[cannon-es](https://github.com/pmndrs/cannon-es): real gravity, a ball that
+actually gains/loses height, and true 3D colliders for boundary walls,
+obstacles, and ramps (ramps are sloped wedge colliders, not a flat
+speed-boost hack). Course geometry (`x`, `y`, `width`, `height`, `angle`,
+etc.) in `src/game/courses/*` is still authored as flat 2D ground-plane data
+— `x`/`y` map to the 3D `x`/`z` ground axes, and elevation (a ramp's `rise`,
+the ball's height) is derived/simulated rather than hand-authored per
+course. Hazard detection (water) stays a ground-plane `(x, z)` check, only
+evaluated once the ball has settled, so a ball briefly airborne over water
+from a ramp launch isn't penalized until it actually lands there.
 
 ## Project structure
 
@@ -33,7 +37,7 @@ physics to use them.
 src/
   types/            shared types (Course, RoomState, BallState, ...)
   game/
-    physics.ts       matter-js world setup, shot/rest/sink helpers (2D only)
+    physics.ts       cannon-es 3D world setup, shot/rest/sink helpers
     courses/          3 built-in courses, 6 holes each
   firebase/
     config.ts         Firebase app/auth/database init (reads .env)
@@ -44,19 +48,33 @@ src/
   navigation/          React Navigation stack
 ```
 
-### 2D physics, 3D rendering
+### Real 3D physics, 2D-authored course data
 
 `GolfCourseView.tsx` renders the course with `three.js` via `expo-gl` and
-`@react-three/fiber/native` (`<Canvas>`), but the *only* numbers driving ball
-movement, collisions, hazards, and network sync are the same flat 2D
-`(x, y)` coordinates physics has always used. The mapping from game data to
-the 3D scene is:
+`@react-three/fiber/native` (`<Canvas>`), and unlike the old 2D physics, the
+3D scene now renders the *real* simulated state — including real elevation
+— not a flat visual layer on top of 2D numbers. The mapping from game data
+to the 3D scene is:
 
 - physics `x` → 3D `x`
-- physics `y` → 3D `z` (depth, "away from camera")
-- 3D `y` (height) is always `0` for the ball and ground — physics has no
-  concept of elevation. Only static decorative meshes (walls, rocks, the cup
-  rim, the flagpole) get nonzero height, purely for visual bulk.
+- physics `y` (ground-plane game data) → 3D `z` (depth, "away from camera")
+- 3D `y` is real height: gravity, ball bounce/airtime, and ramp slopes all
+  drive a genuine `y` position, fed straight from `cannon-es`'s simulated
+  body positions into the ball mesh and synced over Firebase as `BallState.z`
+  (height) / `vz` (vertical velocity) alongside the existing `x`/`y`/`vx`/`vy`.
+- Ramps, boundary walls, and obstacles (`wall`, `rockBlock`, `rock`) are all
+  real 3D colliders (`cannon-es` `Box`/`Cylinder`/`ConvexPolyhedron` shapes)
+  extruded to the same heights (`WALL_MESH_HEIGHT`, `ROCK_MESH_HEIGHT`,
+  `BOUNDARY_WALL_HEIGHT`) the renderer draws, all defined once in
+  `physics.ts` and imported into `GolfCourseView.tsx` so visual and physical
+  geometry can't drift apart. A ramp's collider and mesh are both a wedge
+  (entry edge at ground level tapering up to a sloped exit edge at height
+  `rise`) — not a tilted box — so the ball rolls smoothly onto the slope
+  instead of bouncing off an end-cap.
+- The cup is still a heuristic trigger (distance + speed check, now also
+  requiring the ball be near ground height), not real pit collision geometry
+  — sinking eases the ball's rendered height down over a few frames instead
+  of teleporting it.
 
 The camera is a static per-hole rig (no orbit/touch controls, so it can't
 fight the shot-aim drag gesture), framing the tee-to-cup line and recomputed
@@ -64,8 +82,18 @@ whenever the hole changes.
 
 If you're tweaking gameplay, edit `physics.ts` / `courses/*` as before and
 the 3D view will reflect it automatically. If you're tweaking visuals (mesh
-colors, heights, camera framing, lighting), that's all contained in
-`GolfCourseView.tsx`'s render layer and doesn't touch gameplay.
+colors, camera framing, lighting, materials/textures/shadows), that's all
+contained in `GolfCourseView.tsx`'s render layer and doesn't touch gameplay
+— note that mesh *heights/shapes* for ramps and obstacles are physics-driven
+(see above) and shouldn't be hand-tuned independently of `physics.ts`.
+
+Physics constants (gravity, max shot speed, friction, restitution, sleep
+thresholds, ramp rise-per-boost-unit) are collected in one block near the
+top of `physics.ts`. They're a first-pass estimate ported from the old 2D
+tuning and verified only via a numeric smoke test and a web-platform visual
+check — not real on-device play in Expo Go. Expect to retune them (shot
+power, friction, ramp steepness, bounce) after trying the game on a real
+device.
 
 ## Setup
 

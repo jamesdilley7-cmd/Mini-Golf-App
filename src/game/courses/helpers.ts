@@ -6,6 +6,7 @@ import {
   Vector2,
   WaterHazard,
 } from '../../types';
+import { RAMP_RISE_PER_BOOST_UNIT } from '../physics';
 
 export function wall(
   x: number,
@@ -51,9 +52,19 @@ export function ramp(
   width: number,
   height: number,
   boost: number,
-  angle = 0
+  angle = 0,
+  rise?: number
 ): RampZone {
-  return { kind: 'rect', x, y, width, height, angle, boost };
+  return {
+    kind: 'rect',
+    x,
+    y,
+    width,
+    height,
+    angle,
+    boost,
+    rise: rise ?? boost * RAMP_RISE_PER_BOOST_UNIT,
+  };
 }
 
 export function hole(

@@ -46,8 +46,12 @@ export interface CircleWaterHazard {
 
 export type WaterHazard = RectWaterHazard | CircleWaterHazard;
 
-/** Non-solid boost zone: the first time a shot's ball crosses it, its
- * current speed is increased (direction unchanged) by `boost`. */
+/** Sloped surface: a real 3D collider tilted along its footprint so the ball
+ * climbs/descends it under gravity instead of getting an instant speed
+ * boost. `rise` is the elevation gain (in game units) from the low edge to
+ * the high edge along the footprint's local width axis; `boost` is kept as
+ * a legacy steepness hint for course data that hasn't set `rise` directly
+ * (see `ramp()` in `courses/helpers.ts`). */
 export interface RampZone {
   kind: 'rect';
   x: number;
@@ -56,6 +60,7 @@ export interface RampZone {
   height: number;
   angle?: number;
   boost: number;
+  rise?: number;
 }
 
 export interface HoleDefinition {
@@ -83,8 +88,11 @@ export const COURSE_HEIGHT = 560;
 export interface BallState {
   x: number;
   y: number;
+  /** Height above the ground plane. */
+  z: number;
   vx: number;
   vy: number;
+  vz: number;
   moving: boolean;
   /** Ball literally dropped into the cup (used for sink visuals/animation). */
   sunk: boolean;

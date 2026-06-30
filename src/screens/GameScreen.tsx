@@ -65,21 +65,30 @@ export default function GameScreen({ route, navigation }: Props) {
   function handleBallMoving(partial: {
     x: number;
     y: number;
+    z: number;
     vx: number;
     vy: number;
+    vz: number;
     moving: boolean;
   }) {
     if (!myId) return;
     streamBallPosition(code, myId, partial);
   }
 
-  function handleShotResolved(result: { x: number; y: number; strokes: number; sunk: boolean }) {
+  function handleShotResolved(result: {
+    x: number;
+    y: number;
+    z: number;
+    strokes: number;
+    sunk: boolean;
+  }) {
     if (!myId) return;
     resolveShot({
       room: room!,
       playerId: myId,
       finalX: result.x,
       finalY: result.y,
+      finalZ: result.z,
       strokes: result.strokes,
       sunk: result.sunk,
     }).catch(() => {
