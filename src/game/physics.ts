@@ -30,7 +30,17 @@ export const RAMP_RISE_PER_BOOST_UNIT = 6;
 const GRAVITY_Y = -980;
 const GROUND_THICKNESS = 20;
 const BALL_FRICTION = 0.4;
-const BALL_LINEAR_DAMPING = 0.1;
+// Linear damping alone settles a ball's *position* reasonably, but cannon-es's
+// sleep check requires BOTH linear and angular velocity below sleepSpeedLimit,
+// and angular velocity starts much higher than linear (rolling without
+// slipping means angularVelocity ≈ linearVelocity / BALL_RADIUS, so a
+// full-power putt starts spinning at ~70 rad/s). Leaving angularDamping at
+// cannon-es's default (0.01) meant a shot's spin took 100+ seconds to decay
+// below the sleep threshold even though its linear speed settled in
+// seconds — the ball never actually finished a shot. Both values tuned
+// numerically so every shot (any power) settles within ~5s.
+const BALL_LINEAR_DAMPING = 0.2;
+const BALL_ANGULAR_DAMPING = 0.6;
 const WALL_RESTITUTION = 0.72;
 const OBSTACLE_RESTITUTION = 0.55;
 const SLEEP_SPEED_LIMIT = 8;
@@ -178,6 +188,7 @@ export function createCourseWorld(hole: HoleDefinition, startPosition?: Vector2)
     mass: 1,
     material: ballMaterial,
     linearDamping: BALL_LINEAR_DAMPING,
+    angularDamping: BALL_ANGULAR_DAMPING,
     allowSleep: true,
     sleepSpeedLimit: SLEEP_SPEED_LIMIT,
     sleepTimeLimit: SLEEP_TIME_LIMIT,
