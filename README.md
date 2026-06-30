@@ -19,7 +19,13 @@ code, and putt through 3 courses (6 holes each) with friends in real time.
   across a water gap — so the power of your drag really matters.
 
 Physics (gravity-free top-down rolling, wall bounces, friction) are simulated
-with [matter-js](https://brm.io/matter-js/).
+with [matter-js](https://brm.io/matter-js/) entirely in a flat 2D `(x, y)`
+plane — there's no real elevation. The course is *rendered* in 3D (see below),
+but that's a visual layer on top: physics, hazard detection, ramp boosts, and
+Firebase multiplayer sync all stay 2D. Course geometry (`x`, `y`, `width`,
+`height`, `angle`, etc.) in `src/game/courses/*` is unitless 2D game-plane
+data, not 3D scene data — don't add elevation/`z` fields to it expecting
+physics to use them.
 
 ## Project structure
 
@@ -27,16 +33,39 @@ with [matter-js](https://brm.io/matter-js/).
 src/
   types/            shared types (Course, RoomState, BallState, ...)
   game/
-    physics.ts       matter-js world setup, shot/rest/sink helpers
+    physics.ts       matter-js world setup, shot/rest/sink helpers (2D only)
     courses/          3 built-in courses, 6 holes each
   firebase/
     config.ts         Firebase app/auth/database init (reads .env)
     auth.ts            anonymous sign-in
     rooms.ts           create/join room, turn state machine, score sync
-  components/         GolfCourseView (SVG + gesture), ScoreTable, PrimaryButton
+  components/         GolfCourseView (3D render + gesture), ScoreTable, PrimaryButton
   screens/             Home, Host, Join, Lobby, Game, Results
   navigation/          React Navigation stack
 ```
+
+### 2D physics, 3D rendering
+
+`GolfCourseView.tsx` renders the course with `three.js` via `expo-gl` and
+`@react-three/fiber/native` (`<Canvas>`), but the *only* numbers driving ball
+movement, collisions, hazards, and network sync are the same flat 2D
+`(x, y)` coordinates physics has always used. The mapping from game data to
+the 3D scene is:
+
+- physics `x` → 3D `x`
+- physics `y` → 3D `z` (depth, "away from camera")
+- 3D `y` (height) is always `0` for the ball and ground — physics has no
+  concept of elevation. Only static decorative meshes (walls, rocks, the cup
+  rim, the flagpole) get nonzero height, purely for visual bulk.
+
+The camera is a static per-hole rig (no orbit/touch controls, so it can't
+fight the shot-aim drag gesture), framing the tee-to-cup line and recomputed
+whenever the hole changes.
+
+If you're tweaking gameplay, edit `physics.ts` / `courses/*` as before and
+the 3D view will reflect it automatically. If you're tweaking visuals (mesh
+colors, heights, camera framing, lighting), that's all contained in
+`GolfCourseView.tsx`'s render layer and doesn't touch gameplay.
 
 ## Setup
 

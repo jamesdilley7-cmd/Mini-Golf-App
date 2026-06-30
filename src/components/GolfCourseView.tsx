@@ -1,8 +1,8 @@
+import { Canvas, useThree } from '@react-three/fiber/native';
 import Matter from 'matter-js';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LayoutChangeEvent, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Svg, { Circle, Line, Rect, G } from 'react-native-svg';
 import {
   applyRampBoost,
   applyShot,
@@ -52,6 +52,77 @@ function normalize(v: Vector2): Vector2 {
   const mag = Math.hypot(v.x, v.y);
   if (mag < 1e-6) return { x: 0, y: 0 };
   return { x: v.x / mag, y: v.y / mag };
+}
+
+// 3D scene tuning. Physics/network stay in the 2D (x, y) plane from
+// src/game/physics.ts and src/firebase/rooms.ts; here that plane is mapped
+// onto the 3D ground as (x, z), with 3D height (y) reserved for purely
+// decorative geometry — see the README's "physics stays 2D" note.
+const WALL_MESH_HEIGHT = 22;
+const ROCK_MESH_HEIGHT = 16;
+const TRIM_HEIGHT = 10;
+const FLAGPOLE_HEIGHT = 38;
+const WATER_Y = 0.6;
+const RAMP_Y = 1.2;
+const SCENE_BACKGROUND = '#bfe6cf';
+
+/** 2D obstacle/hazard `angle` (degrees) rotates a rect within the (x, y)
+ * plane the same way physics.ts's pointInRect does; converting that into a
+ * three.js Y-axis rotation (the ground plane is now x/z) flips the sign. */
+function degToRotY(angleDeg?: number): number {
+  return -((angleDeg ?? 0) * Math.PI) / 180;
+}
+
+function CameraRig({
+  position,
+  lookAt,
+}: {
+  position: [number, number, number];
+  lookAt: [number, number, number];
+}) {
+  const { camera } = useThree();
+  useEffect(() => {
+    camera.position.set(position[0], position[1], position[2]);
+    camera.lookAt(lookAt[0], lookAt[1], lookAt[2]);
+    camera.updateProjectionMatrix();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera, ...position, ...lookAt]);
+  return null;
+}
+
+/** A thin bar from `ballX/Z + dir*from` to `ballX/Z + dir*to`, used for the
+ * pull-back and aim segments of the shot indicator. */
+function AimBar({
+  ballX,
+  ballZ,
+  dirX,
+  dirZ,
+  from,
+  to,
+  color,
+  opacity = 1,
+}: {
+  ballX: number;
+  ballZ: number;
+  dirX: number;
+  dirZ: number;
+  from: number;
+  to: number;
+  color: string;
+  opacity?: number;
+}) {
+  const length = to - from;
+  if (length <= 0.5) return null;
+  const mid = from + length / 2;
+  const midX = ballX + dirX * mid;
+  const midZ = ballZ + dirZ * mid;
+  const rotY = Math.atan2(-dirZ, dirX);
+  return (
+    <mesh position={[midX, 2, midZ]} rotation={[0, rotY, 0]}>
+      <boxGeometry args={[length, 1.2, 1.6]} />
+      <meshStandardMaterial color={color} transparent={opacity < 1} opacity={opacity} />
+    </mesh>
+  );
 }
 
 export default function GolfCourseView({
@@ -216,180 +287,179 @@ export default function GolfCourseView({
   const myRenderPos = isMyTurn ? localBallPos : { x: myBall.x, y: myBall.y };
   const showMyBall = isMyTurn || !myBall.sunk;
 
+  // Static per-hole camera: positioned behind the tee, elevated, looking at
+  // the tee-cup midpoint. Recomputed only when the hole (or its tee/cup)
+  // changes, since this view has no orbit/touch camera controls — those
+  // would conflict with the shot-aim pan gesture above.
+  const cameraConfig = useMemo(() => {
+    const dx = hole.cup.x - hole.tee.x;
+    const dz = hole.cup.y - hole.tee.y;
+    const len = Math.hypot(dx, dz) || 1;
+    const backX = -dx / len;
+    const backZ = -dz / len;
+    // Pulled back far enough that the tee (where the ball sits) stays inside
+    // the vertical FOV alongside the cup — see GolfCourseView camera-framing
+    // notes: a small pullback puts the tee at a much steeper depression
+    // angle than the (farther) look-at point, pushing it below the frustum.
+    const pullback = 260;
+    const position: [number, number, number] = [
+      hole.tee.x + backX * pullback,
+      80 + len * 0.5,
+      hole.tee.y + backZ * pullback,
+    ];
+    const lookAt: [number, number, number] = [
+      (hole.tee.x + hole.cup.x) / 2,
+      0,
+      (hole.tee.y + hole.cup.y) / 2,
+    ];
+    return { position, lookAt };
+  }, [hole.index, hole.tee.x, hole.tee.y, hole.cup.x, hole.cup.y]);
+
+  const trimBars = [
+    // top
+    { pos: [COURSE_WIDTH / 2, TRIM_HEIGHT / 2, WALL_THICKNESS / 2], size: [COURSE_WIDTH, TRIM_HEIGHT, WALL_THICKNESS] },
+    // bottom
+    { pos: [COURSE_WIDTH / 2, TRIM_HEIGHT / 2, COURSE_HEIGHT - WALL_THICKNESS / 2], size: [COURSE_WIDTH, TRIM_HEIGHT, WALL_THICKNESS] },
+    // left
+    { pos: [WALL_THICKNESS / 2, TRIM_HEIGHT / 2, COURSE_HEIGHT / 2], size: [WALL_THICKNESS, TRIM_HEIGHT, COURSE_HEIGHT] },
+    // right
+    { pos: [COURSE_WIDTH - WALL_THICKNESS / 2, TRIM_HEIGHT / 2, COURSE_HEIGHT / 2], size: [WALL_THICKNESS, TRIM_HEIGHT, COURSE_HEIGHT] },
+  ] as const;
+
   return (
     <View style={styles.wrapper} onLayout={handleLayout}>
       <GestureDetector gesture={panGesture}>
         <View style={styles.surface}>
-          <Svg width="100%" height="100%" viewBox={`0 0 ${COURSE_WIDTH} ${COURSE_HEIGHT}`}>
-            <Rect
-              x={0}
-              y={0}
-              width={COURSE_WIDTH}
-              height={COURSE_HEIGHT}
-              fill="#2E8B4F"
-              rx={10}
-            />
-            <Rect
-              x={WALL_THICKNESS / 2}
-              y={WALL_THICKNESS / 2}
-              width={COURSE_WIDTH - WALL_THICKNESS}
-              height={COURSE_HEIGHT - WALL_THICKNESS}
-              fill="none"
-              stroke="#256B3E"
-              strokeWidth={WALL_THICKNESS}
-            />
+          <Canvas camera={{ fov: 55, near: 1, far: 2000 }}>
+            <CameraRig position={cameraConfig.position} lookAt={cameraConfig.lookAt} />
+            <color attach="background" args={[SCENE_BACKGROUND]} />
+            <ambientLight intensity={0.65} />
+            <directionalLight position={[120, 220, 80]} intensity={0.9} />
+
+            {/* ground */}
+            <mesh position={[COURSE_WIDTH / 2, 0, COURSE_HEIGHT / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+              <planeGeometry args={[COURSE_WIDTH, COURSE_HEIGHT]} />
+              <meshStandardMaterial color="#2E8B4F" />
+            </mesh>
+            {/* boundary trim */}
+            {trimBars.map((bar, i) => (
+              <mesh key={`trim-${i}`} position={bar.pos as unknown as [number, number, number]}>
+                <boxGeometry args={bar.size as unknown as [number, number, number]} />
+                <meshStandardMaterial color="#256B3E" />
+              </mesh>
+            ))}
 
             {hole.water.map((w, i) =>
               w.kind === 'circle' ? (
-                <Circle
-                  key={`water-${i}`}
-                  cx={w.x}
-                  cy={w.y}
-                  r={w.radius}
-                  fill="#2C7BC9"
-                  stroke="#1A4F87"
-                  strokeWidth={2}
-                />
+                <mesh key={`water-${i}`} position={[w.x, WATER_Y, w.y]} rotation={[-Math.PI / 2, 0, 0]}>
+                  <circleGeometry args={[w.radius, 28]} />
+                  <meshStandardMaterial color="#2C7BC9" transparent opacity={0.82} />
+                </mesh>
               ) : (
-                <Rect
+                <mesh
                   key={`water-${i}`}
-                  x={w.x - w.width / 2}
-                  y={w.y - w.height / 2}
-                  width={w.width}
-                  height={w.height}
-                  fill="#2C7BC9"
-                  stroke="#1A4F87"
-                  strokeWidth={2}
-                  rx={8}
-                  origin={`${w.x}, ${w.y}`}
-                  rotation={w.angle ?? 0}
-                />
+                  position={[w.x, WATER_Y, w.y]}
+                  rotation={[-Math.PI / 2, degToRotY(w.angle), 0]}
+                >
+                  <planeGeometry args={[w.width, w.height]} />
+                  <meshStandardMaterial color="#2C7BC9" transparent opacity={0.82} />
+                </mesh>
               )
             )}
 
             {hole.ramps.map((r, i) => (
-              <Rect
+              <mesh
                 key={`ramp-${i}`}
-                x={r.x - r.width / 2}
-                y={r.y - r.height / 2}
-                width={r.width}
-                height={r.height}
-                fill="#E8B23A"
-                stroke="#fff"
-                strokeWidth={1.5}
-                strokeDasharray="4,3"
-                rx={4}
-                origin={`${r.x}, ${r.y}`}
-                rotation={r.angle ?? 0}
-                opacity={0.92}
-              />
+                position={[r.x, RAMP_Y, r.y]}
+                rotation={[-Math.PI / 2, degToRotY(r.angle), 0]}
+              >
+                <planeGeometry args={[r.width, r.height]} />
+                <meshStandardMaterial color="#E8B23A" transparent opacity={0.92} />
+              </mesh>
             ))}
 
             {hole.obstacles.map((obstacle, i) => {
+              const isRock = obstacle.style === 'rock';
+              const color = isRock ? '#8B8378' : '#A0522D';
+              const meshHeight = isRock ? ROCK_MESH_HEIGHT : WALL_MESH_HEIGHT;
               if (obstacle.kind === 'circle') {
                 return (
-                  <Circle
-                    key={i}
-                    cx={obstacle.x}
-                    cy={obstacle.y}
-                    r={obstacle.radius}
-                    fill={obstacle.style === 'rock' ? '#8B8378' : '#A0522D'}
-                  />
+                  <mesh key={i} position={[obstacle.x, meshHeight / 2, obstacle.y]}>
+                    <cylinderGeometry args={[obstacle.radius, obstacle.radius, meshHeight, 20]} />
+                    <meshStandardMaterial color={color} />
+                  </mesh>
                 );
               }
               return (
-                <Rect
+                <mesh
                   key={i}
-                  x={obstacle.x - obstacle.width / 2}
-                  y={obstacle.y - obstacle.height / 2}
-                  width={obstacle.width}
-                  height={obstacle.height}
-                  fill={obstacle.style === 'rock' ? '#8B8378' : '#A0522D'}
-                  rx={3}
-                  origin={`${obstacle.x}, ${obstacle.y}`}
-                  rotation={obstacle.angle ?? 0}
-                />
+                  position={[obstacle.x, meshHeight / 2, obstacle.y]}
+                  rotation={[0, degToRotY(obstacle.angle), 0]}
+                >
+                  <boxGeometry args={[obstacle.width, meshHeight, obstacle.height]} />
+                  <meshStandardMaterial color={color} />
+                </mesh>
               );
             })}
 
             {/* cup */}
-            <Circle cx={hole.cup.x} cy={hole.cup.y} r={hole.cupRadius} fill="#0B3D24" />
-            <Circle
-              cx={hole.cup.x}
-              cy={hole.cup.y}
-              r={hole.cupRadius}
-              fill="none"
-              stroke="#fff"
-              strokeWidth={1}
-              opacity={0.4}
-            />
-            {/* flag */}
-            <Line
-              x1={hole.cup.x}
-              y1={hole.cup.y}
-              x2={hole.cup.x}
-              y2={hole.cup.y - 38}
-              stroke="#fff"
-              strokeWidth={2}
-            />
-            <Rect
-              x={hole.cup.x}
-              y={hole.cup.y - 38}
-              width={16}
-              height={11}
-              fill={accentColor}
-            />
+            <mesh position={[hole.cup.x, 0.15, hole.cup.y]} rotation={[-Math.PI / 2, 0, 0]}>
+              <circleGeometry args={[hole.cupRadius, 24]} />
+              <meshStandardMaterial color="#0B3D24" />
+            </mesh>
+            {/* flagpole + flag */}
+            <mesh position={[hole.cup.x, FLAGPOLE_HEIGHT / 2, hole.cup.y]}>
+              <cylinderGeometry args={[0.6, 0.6, FLAGPOLE_HEIGHT, 8]} />
+              <meshStandardMaterial color="#ffffff" />
+            </mesh>
+            <mesh position={[hole.cup.x + 8, FLAGPOLE_HEIGHT - 5, hole.cup.y]}>
+              <boxGeometry args={[16, 11, 0.5]} />
+              <meshStandardMaterial color={accentColor} />
+            </mesh>
 
             {/* other players' balls */}
             {otherBalls
               .filter((o) => !o.ball.sunk)
               .map((o) => (
-                <Circle
-                  key={o.id}
-                  cx={o.ball.x}
-                  cy={o.ball.y}
-                  r={BALL_RADIUS}
-                  fill={o.color}
-                  stroke="#00000033"
-                  strokeWidth={1}
-                />
+                <mesh key={o.id} position={[o.ball.x, BALL_RADIUS, o.ball.y]}>
+                  <sphereGeometry args={[BALL_RADIUS, 16, 16]} />
+                  <meshStandardMaterial color={o.color} />
+                </mesh>
               ))}
 
             {/* my ball */}
             {showMyBall && (
-              <Circle
-                cx={myRenderPos.x}
-                cy={myRenderPos.y}
-                r={BALL_RADIUS}
-                fill={myColor}
-                stroke="#fff"
-                strokeWidth={1.5}
-              />
+              <mesh position={[myRenderPos.x, BALL_RADIUS, myRenderPos.y]}>
+                <sphereGeometry args={[BALL_RADIUS, 16, 16]} />
+                <meshStandardMaterial color={myColor} />
+              </mesh>
             )}
 
             {/* aim indicator */}
             {drag && isMyTurn && (
-              <G>
-                <Line
-                  x1={myRenderPos.x}
-                  y1={myRenderPos.y}
-                  x2={myRenderPos.x - drag.aimDir.x * drag.power * 40}
-                  y2={myRenderPos.y - drag.aimDir.y * drag.power * 40}
-                  stroke="#FFFFFFAA"
-                  strokeWidth={2}
-                  strokeDasharray="4,4"
+              <>
+                <AimBar
+                  ballX={myRenderPos.x}
+                  ballZ={myRenderPos.y}
+                  dirX={-drag.aimDir.x}
+                  dirZ={-drag.aimDir.y}
+                  from={0}
+                  to={drag.power * 40}
+                  color="#FFFFFF"
+                  opacity={0.65}
                 />
-                <Line
-                  x1={myRenderPos.x}
-                  y1={myRenderPos.y}
-                  x2={myRenderPos.x + drag.aimDir.x * (20 + drag.power * AIM_INDICATOR_LENGTH)}
-                  y2={myRenderPos.y + drag.aimDir.y * (20 + drag.power * AIM_INDICATOR_LENGTH)}
-                  stroke={drag.power > 0.85 ? '#FF5A5F' : '#FFFFFF'}
-                  strokeWidth={3}
+                <AimBar
+                  ballX={myRenderPos.x}
+                  ballZ={myRenderPos.y}
+                  dirX={drag.aimDir.x}
+                  dirZ={drag.aimDir.y}
+                  from={20}
+                  to={20 + drag.power * AIM_INDICATOR_LENGTH}
+                  color={drag.power > 0.85 ? '#FF5A5F' : '#FFFFFF'}
                 />
-              </G>
+              </>
             )}
-          </Svg>
+          </Canvas>
         </View>
       </GestureDetector>
     </View>
