@@ -1,5 +1,5 @@
 import { Course } from '../../types';
-import { hole, rockBlock, wall } from './helpers';
+import { hole, ramp, rockBlock, wall, water } from './helpers';
 
 export const sunnyMeadows: Course = {
   id: 'sunny-meadows',
@@ -8,7 +8,18 @@ export const sunnyMeadows: Course = {
   accentColor: '#3DDC97',
   holes: [
     hole(0, 2, { x: 160, y: 520 }, { x: 160, y: 60 }, []),
-    hole(1, 2, { x: 100, y: 520 }, { x: 220, y: 70 }, []),
+    hole(
+      1,
+      3,
+      { x: 100, y: 520 },
+      { x: 220, y: 70 },
+      [],
+      11,
+      {
+        ramps: [ramp(160, 345, 130, 28, 2)],
+        water: [water(160, 290, 250, 56)],
+      }
+    ),
     hole(
       2,
       3,
@@ -28,7 +39,9 @@ export const sunnyMeadows: Course = {
       4,
       { x: 240, y: 520 },
       { x: 80, y: 80 },
-      [rockBlock(160, 300, 90, 50, 0)]
+      [rockBlock(160, 300, 90, 50, 0)],
+      11,
+      { water: [water(130, 170, 200, 44)] }
     ),
     hole(
       5,

@@ -1,5 +1,13 @@
 import Matter from 'matter-js';
-import { COURSE_HEIGHT, COURSE_WIDTH, HoleDefinition, Obstacle, Vector2 } from '../types';
+import {
+  COURSE_HEIGHT,
+  COURSE_WIDTH,
+  HoleDefinition,
+  Obstacle,
+  RampZone,
+  Vector2,
+  WaterHazard,
+} from '../types';
 
 export const BALL_RADIUS = 6;
 export const WALL_THICKNESS = 12;
@@ -130,6 +138,52 @@ export function checkSunk(ball: Matter.Body, hole: HoleDefinition): boolean {
   const captureRadius = hole.cupRadius * 0.85;
   const dist = distanceTo(ball.position, hole.cup);
   return dist < captureRadius && ballSpeed(ball) < 4.2;
+}
+
+function pointInRect(
+  point: Vector2,
+  rect: { x: number; y: number; width: number; height: number; angle?: number }
+): boolean {
+  const angle = ((rect.angle ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(-angle);
+  const sin = Math.sin(-angle);
+  const dx = point.x - rect.x;
+  const dy = point.y - rect.y;
+  const localX = dx * cos - dy * sin;
+  const localY = dx * sin + dy * cos;
+  return Math.abs(localX) <= rect.width / 2 && Math.abs(localY) <= rect.height / 2;
+}
+
+function pointInCircle(point: Vector2, circle: { x: number; y: number; radius: number }): boolean {
+  return distanceTo(point, circle) <= circle.radius;
+}
+
+function pointInWaterHazard(point: Vector2, water: WaterHazard): boolean {
+  return water.kind === 'circle' ? pointInCircle(point, water) : pointInRect(point, water);
+}
+
+export function isInWater(position: Vector2, hole: HoleDefinition): boolean {
+  return hole.water.some((w) => pointInWaterHazard(position, w));
+}
+
+export function findCrossedRamp(
+  position: Vector2,
+  hole: HoleDefinition,
+  alreadyTriggered: Set<number>
+): number | null {
+  for (let i = 0; i < hole.ramps.length; i++) {
+    if (alreadyTriggered.has(i)) continue;
+    if (pointInRect(position, hole.ramps[i])) return i;
+  }
+  return null;
+}
+
+export function applyRampBoost(ball: Matter.Body, ramp: RampZone) {
+  const { x, y } = ball.velocity;
+  const speed = Math.sqrt(x * x + y * y);
+  if (speed < 1e-3) return;
+  const factor = (speed + ramp.boost) / speed;
+  Matter.Body.setVelocity(ball, { x: x * factor, y: y * factor });
 }
 
 export function clampBallInBounds(ball: Matter.Body) {

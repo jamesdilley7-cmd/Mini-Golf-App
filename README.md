@@ -12,6 +12,11 @@ code, and putt through 3 courses (6 holes each) with friends in real time.
 - Players take turns one shot at a time, looping around the table until
   everyone has holed out (or hit the 10-stroke cap for that hole).
 - Scores are tracked per hole across all 18 holes; lowest total wins.
+- Some holes have **water hazards**: roll into one and stop, and you take a
+  1-stroke penalty and your ball is replaced where the shot started, to retry.
+  **Ramps** (orange boost pads) give the ball a speed kick in whatever
+  direction it's already moving, often used to help carry a well-powered shot
+  across a water gap — so the power of your drag really matters.
 
 Physics (gravity-free top-down rolling, wall bounces, friction) are simulated
 with [matter-js](https://brm.io/matter-js/).

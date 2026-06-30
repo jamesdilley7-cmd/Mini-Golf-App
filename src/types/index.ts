@@ -3,7 +3,7 @@ export interface Vector2 {
   y: number;
 }
 
-export type ObstacleStyle = 'wall' | 'rock' | 'water';
+export type ObstacleStyle = 'wall' | 'rock';
 
 export interface RectObstacle {
   kind: 'rect';
@@ -25,6 +25,39 @@ export interface CircleObstacle {
 
 export type Obstacle = RectObstacle | CircleObstacle;
 
+/** Non-solid hazard zone: the ball rolls over it freely, but if it comes to
+ * rest inside, the shot is penalized and the ball is replaced at its
+ * pre-shot position. */
+export interface RectWaterHazard {
+  kind: 'rect';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  angle?: number;
+}
+
+export interface CircleWaterHazard {
+  kind: 'circle';
+  x: number;
+  y: number;
+  radius: number;
+}
+
+export type WaterHazard = RectWaterHazard | CircleWaterHazard;
+
+/** Non-solid boost zone: the first time a shot's ball crosses it, its
+ * current speed is increased (direction unchanged) by `boost`. */
+export interface RampZone {
+  kind: 'rect';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  angle?: number;
+  boost: number;
+}
+
 export interface HoleDefinition {
   index: number;
   par: number;
@@ -32,6 +65,8 @@ export interface HoleDefinition {
   cup: Vector2;
   cupRadius: number;
   obstacles: Obstacle[];
+  water: WaterHazard[];
+  ramps: RampZone[];
 }
 
 export interface Course {

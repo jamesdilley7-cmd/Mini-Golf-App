@@ -1,14 +1,18 @@
+import Matter from 'matter-js';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LayoutChangeEvent, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Circle, Line, Rect, G } from 'react-native-svg';
 import {
+  applyRampBoost,
   applyShot,
   BALL_RADIUS,
   checkSunk,
   clampBallInBounds,
   createCourseWorld,
   CourseWorld,
+  findCrossedRamp,
+  isInWater,
   isResting,
   settleBall,
   stepWorld,
@@ -67,6 +71,8 @@ export default function GolfCourseView({
   const lastBroadcastRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const scaleRef = useRef(1);
+  const shotStartPosRef = useRef<Vector2>({ x: myBall.x, y: myBall.y });
+  const triggeredRampsRef = useRef<Set<number>>(new Set());
 
   const [localBallPos, setLocalBallPos] = useState<Vector2>({ x: myBall.x, y: myBall.y });
   const [drag, setDrag] = useState<{ aimDir: Vector2; power: number } | null>(null);
@@ -83,6 +89,8 @@ export default function GolfCourseView({
     worldRef.current = world;
     strokesRef.current = myBall.strokes;
     movingRef.current = false;
+    shotStartPosRef.current = { x: myBall.x, y: myBall.y };
+    triggeredRampsRef.current.clear();
     setLocalBallPos({ x: myBall.x, y: myBall.y });
     setCanShoot(true);
     return () => {
@@ -102,6 +110,12 @@ export default function GolfCourseView({
     stepWorld(world.engine, delta);
     clampBallInBounds(world.ball);
 
+    const crossedRamp = findCrossedRamp(world.ball.position, hole, triggeredRampsRef.current);
+    if (crossedRamp !== null) {
+      triggeredRampsRef.current.add(crossedRamp);
+      applyRampBoost(world.ball, hole.ramps[crossedRamp]);
+    }
+
     const sunk = checkSunk(world.ball, hole);
     if (sunk) {
       settleBall(world.ball);
@@ -116,6 +130,17 @@ export default function GolfCourseView({
       settleBall(world.ball);
       movingRef.current = false;
       lastFrameRef.current = null;
+
+      if (isInWater(world.ball.position, hole)) {
+        // Splashed: penalty stroke, retry from where this shot started.
+        strokesRef.current += 1;
+        const dropPos = shotStartPosRef.current;
+        Matter.Body.setPosition(world.ball, dropPos);
+        setLocalBallPos(dropPos);
+        onShotResolved({ x: dropPos.x, y: dropPos.y, strokes: strokesRef.current, sunk: false });
+        return;
+      }
+
       const pos = { x: world.ball.position.x, y: world.ball.position.y };
       setLocalBallPos(pos);
       onShotResolved({ x: pos.x, y: pos.y, strokes: strokesRef.current, sunk: false });
@@ -142,6 +167,8 @@ export default function GolfCourseView({
   function takeShot(aimDir: Vector2, power: number) {
     const world = worldRef.current;
     if (!world || movingRef.current) return;
+    shotStartPosRef.current = { x: world.ball.position.x, y: world.ball.position.y };
+    triggeredRampsRef.current.clear();
     strokesRef.current += 1;
     setCanShoot(false);
     applyShot(world.ball, aimDir, power);
@@ -208,6 +235,52 @@ export default function GolfCourseView({
               stroke="#256B3E"
               strokeWidth={WALL_THICKNESS}
             />
+
+            {hole.water.map((w, i) =>
+              w.kind === 'circle' ? (
+                <Circle
+                  key={`water-${i}`}
+                  cx={w.x}
+                  cy={w.y}
+                  r={w.radius}
+                  fill="#2C7BC9"
+                  stroke="#1A4F87"
+                  strokeWidth={2}
+                />
+              ) : (
+                <Rect
+                  key={`water-${i}`}
+                  x={w.x - w.width / 2}
+                  y={w.y - w.height / 2}
+                  width={w.width}
+                  height={w.height}
+                  fill="#2C7BC9"
+                  stroke="#1A4F87"
+                  strokeWidth={2}
+                  rx={8}
+                  origin={`${w.x}, ${w.y}`}
+                  rotation={w.angle ?? 0}
+                />
+              )
+            )}
+
+            {hole.ramps.map((r, i) => (
+              <Rect
+                key={`ramp-${i}`}
+                x={r.x - r.width / 2}
+                y={r.y - r.height / 2}
+                width={r.width}
+                height={r.height}
+                fill="#E8B23A"
+                stroke="#fff"
+                strokeWidth={1.5}
+                strokeDasharray="4,3"
+                rx={4}
+                origin={`${r.x}, ${r.y}`}
+                rotation={r.angle ?? 0}
+                opacity={0.92}
+              />
+            ))}
 
             {hole.obstacles.map((obstacle, i) => {
               if (obstacle.kind === 'circle') {

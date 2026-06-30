@@ -1,5 +1,5 @@
 import { Course } from '../../types';
-import { hole, rock, rockBlock, wall } from './helpers';
+import { hole, ramp, rock, rockBlock, wall, water } from './helpers';
 
 export const castleGreens: Course = {
   id: 'castle-greens',
@@ -39,7 +39,7 @@ export const castleGreens: Course = {
     ),
     hole(
       4,
-      5,
+      6,
       { x: 160, y: 540 },
       { x: 160, y: 50 },
       [
@@ -48,7 +48,11 @@ export const castleGreens: Course = {
         wall(40, 330, 140, 16, 0),
         wall(280, 190, 140, 16, 0),
       ],
-      9
+      9,
+      {
+        ramps: [ramp(140, 130, 100, 24, 2)],
+        water: [water(140, 85, 140, 40)],
+      }
     ),
     hole(
       5,

@@ -1,5 +1,5 @@
 import { Course } from '../../types';
-import { hole, rock, rockBlock, wall } from './helpers';
+import { hole, ramp, rock, rockBlock, wall, water } from './helpers';
 
 export const pirateCove: Course = {
   id: 'pirate-cove',
@@ -30,10 +30,15 @@ export const pirateCove: Course = {
     ),
     hole(
       3,
-      4,
+      5,
       { x: 80, y: 520 },
       { x: 260, y: 70 },
-      [rockBlock(220, 280, 110, 70, 0)]
+      [rockBlock(220, 280, 110, 70, 0)],
+      11,
+      {
+        ramps: [ramp(220, 190, 110, 26, 2)],
+        water: [water(220, 130, 140, 50)],
+      }
     ),
     hole(
       4,
