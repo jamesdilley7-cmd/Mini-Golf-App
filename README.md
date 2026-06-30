@@ -87,6 +87,12 @@ src/
    Then scan the QR code with **Expo Go** (iOS/Android), or press `a` / `i`
    for an emulator/simulator.
 
+   This project targets **Expo SDK 55**. If Expo Go reports "Project is
+   incompatible with this version of Expo Go," check the SDK version shown
+   in Expo Go's Settings/Profile screen and make sure it matches the `expo`
+   version in `package.json` — Expo Go on app stores can lag a release or
+   two behind the latest SDK on npm.
+
 ## Known v1 simplifications
 
 - Balls don't collide with each other, only with walls/obstacles — this keeps
