@@ -79,7 +79,10 @@ export default function GolfCourseView({
   const [canShoot, setCanShoot] = useState(true);
 
   // (Re)initialize the local physics world whenever it becomes this player's
-  // turn, or the hole changes, starting from wherever their ball last rested.
+  // turn, the hole changes, or a shot of theirs resolves (myBall.strokes ticks
+  // up) — that last case covers a player keeping the turn shot-to-shot, e.g.
+  // solo testing or being the last non-retired player on a hole, where
+  // isMyTurn never flips false/true to retrigger this otherwise.
   useEffect(() => {
     if (!isMyTurn) {
       worldRef.current = null;
@@ -98,7 +101,7 @@ export default function GolfCourseView({
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMyTurn, hole.index]);
+  }, [isMyTurn, hole.index, myBall.strokes]);
 
   function stepLoop(timestamp: number) {
     const world = worldRef.current;
