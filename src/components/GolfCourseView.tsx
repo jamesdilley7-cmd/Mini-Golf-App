@@ -39,8 +39,39 @@ const AIM_INDICATOR_LENGTH = 90;
 const BROADCAST_INTERVAL_MS = 70;
 const SINK_DROP_DEPTH = -3;
 const SINK_DROP_DURATION_MS = 220;
-// Radians of camera yaw per pixel of a rotate drag.
+// Radians of camera yaw per pixel of a horizontal rotate drag, and radians of
+// pitch per pixel of a vertical rotate drag.
 const ROTATE_SENSITIVITY = 0.006;
+const PITCH_SENSITIVITY = 0.005;
+
+interface TouchSnapshot {
+  cx: number;
+  cy: number;
+  /** Finger spread for pinch; 0 when fewer than two touches are down. */
+  spread: number;
+}
+
+/** Reduce the active touches to a centroid (for orbit/tilt) and a spread (for
+ * pinch-zoom), so one code path handles one- and two-finger camera drags. */
+function touchSnapshot(
+  touches: { pageX: number; pageY: number }[]
+): TouchSnapshot {
+  if (touches.length >= 2) {
+    const a = touches[0];
+    const b = touches[1];
+    return {
+      cx: (a.pageX + b.pageX) / 2,
+      cy: (a.pageY + b.pageY) / 2,
+      spread: Math.hypot(a.pageX - b.pageX, a.pageY - b.pageY),
+    };
+  }
+  const t = touches[0];
+  return { cx: t ? t.pageX : 0, cy: t ? t.pageY : 0, spread: 0 };
+}
+
+function clamp(v: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, v));
+}
 
 interface BallPosition {
   x: number;
@@ -259,11 +290,10 @@ function SkyBackground() {
   const { scene } = useThree();
   const tex = useMemo(() => makeSkyTexture(), []);
   useEffect(() => {
-    const prev = scene.background;
     scene.background = tex;
-    return () => {
-      scene.background = prev;
-    };
+    // Intentionally not restoring a previous background on cleanup: the scene
+    // is being torn down with the Canvas anyway, and touching it during
+    // unmount is an unnecessary side-effect.
   }, [scene, tex]);
   return null;
 }
@@ -339,23 +369,34 @@ function WaterSurface({
   );
 }
 
-const CAM_DISTANCE = 250;
-const CAM_HEIGHT = 175;
 const CAM_LOOK_HEIGHT = 10;
 const CAM_FOCUS_LERP = 0.16;
+// Orbit distance (zoom) and pitch (angle above the ground). Defaults roughly
+// match the previous fixed framing (~248 horizontal, ~187 up).
+const CAM_DISTANCE_DEFAULT = 305;
+const CAM_DISTANCE_MIN = 150;
+const CAM_DISTANCE_MAX = 540;
+const CAM_PITCH_DEFAULT = 0.4; // looks toward the horizon so the sky stays in frame
+const CAM_PITCH_MIN = 0.12; // near ground level
+const CAM_PITCH_MAX = 1.4; // near top-down
 
 /** Chase camera. Every frame it eases a smoothed focus point toward the live
  * ball position (`focusRef`) and orbits the camera around it at the current
- * azimuth (`azRef`, driven by the rotate gesture), always looking at the ball.
- * So the view follows the ball as it rolls and the player can swing the
- * camera around the shot. Ground axes are (x, z) = (game x, game y); azimuth 0
- * places the camera on the +z (tee) side looking toward −z. */
+ * azimuth / pitch / distance (all gesture-driven refs), always looking at the
+ * ball — so the view follows the ball as it rolls and the player can swing the
+ * camera around it, tilt it up/down, and pinch to zoom. Ground axes are
+ * (x, z) = (game x, game y); azimuth 0 places the camera on the +z (tee) side
+ * looking toward −z. */
 function FollowCamera({
   focusRef,
   azRef,
+  pitchRef,
+  distanceRef,
 }: {
   focusRef: React.MutableRefObject<Vector2>;
   azRef: React.MutableRefObject<number>;
+  pitchRef: React.MutableRefObject<number>;
+  distanceRef: React.MutableRefObject<number>;
 }) {
   const { camera } = useThree();
   const smooth = useRef<Vector2 | null>(null);
@@ -365,12 +406,16 @@ function FollowCamera({
     smooth.current.x += (f.x - smooth.current.x) * CAM_FOCUS_LERP;
     smooth.current.y += (f.y - smooth.current.y) * CAM_FOCUS_LERP;
     const az = azRef.current;
+    const pitch = pitchRef.current;
+    const dist = distanceRef.current;
+    const horizontal = Math.cos(pitch) * dist;
+    const height = Math.sin(pitch) * dist;
     const backX = -Math.sin(az);
     const backZ = Math.cos(az);
     camera.position.set(
-      smooth.current.x + backX * CAM_DISTANCE,
-      CAM_HEIGHT,
-      smooth.current.y + backZ * CAM_DISTANCE
+      smooth.current.x + backX * horizontal,
+      CAM_LOOK_HEIGHT + height,
+      smooth.current.y + backZ * horizontal
     );
     camera.lookAt(smooth.current.x, CAM_LOOK_HEIGHT, smooth.current.y);
   });
@@ -481,6 +526,8 @@ export default function GolfCourseView({
   // gesture drives, `focusRef` is the ground point the camera chases (the live
   // ball).
   const azRef = useRef(defaultAzimuth(hole.tee, hole.cup));
+  const pitchRef = useRef(CAM_PITCH_DEFAULT);
+  const distanceRef = useRef(CAM_DISTANCE_DEFAULT);
   const focusRef = useRef<Vector2>({ x: myBall.x, y: myBall.y });
 
   const [localBallPos, setLocalBallPos] = useState<BallPosition>({
@@ -501,7 +548,7 @@ export default function GolfCourseView({
   const takeShotRef = useRef<(aimDir: Vector2, power: number) => void>(() => {});
   // Per-gesture state for the shot/rotate PanResponder below.
   const gestureModeRef = useRef<'none' | 'aim' | 'rotate'>('none');
-  const azAtGrantRef = useRef(0);
+  const lastTouchRef = useRef<TouchSnapshot | null>(null);
 
   // (Re)initialize the local physics world whenever it becomes this player's
   // turn, the hole changes, or a shot of theirs resolves (myBall.strokes ticks
@@ -665,27 +712,52 @@ export default function GolfCourseView({
   //
   // Two gestures share the surface, disambiguated per touch:
   //   • one finger, on your turn → aim & putt (pull back, release)
-  //   • two fingers (or one finger when it isn't your shot) → rotate the view
+  //   • two fingers (or one finger when it isn't your shot) → move the camera:
+  //       horizontal drag = orbit, vertical drag = tilt, pinch = zoom
   // The mode is decided on the first move of each gesture and held until release.
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        // Claim every touch so the camera can be rotated at any time, not just
+        // Claim every touch so the camera can be moved at any time, not just
         // on your turn.
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: () => {
           gestureModeRef.current = 'none';
-          azAtGrantRef.current = azRef.current;
+          lastTouchRef.current = null;
         },
         onPanResponderMove: (evt, gesture) => {
+          // `touches` is populated on native but can be absent for
+          // mouse-driven events on web — guard so the mode still resolves.
+          const touches = evt.nativeEvent.touches ?? [];
           if (gestureModeRef.current === 'none') {
-            const twoFingers = evt.nativeEvent.touches.length >= 2;
+            const twoFingers = touches.length >= 2;
             const canAim = isMyTurnRef.current && canShootRef.current;
             gestureModeRef.current = !twoFingers && canAim ? 'aim' : 'rotate';
+            lastTouchRef.current = null;
           }
           if (gestureModeRef.current === 'rotate') {
-            azRef.current = azAtGrantRef.current - gesture.dx * ROTATE_SENSITIVITY;
+            // Drive orbit/tilt/zoom incrementally from the touch centroid and
+            // spread, so one- and two-finger drags (and pinches) all work and
+            // transition smoothly if a second finger joins mid-gesture.
+            const snap = touchSnapshot(touches);
+            const last = lastTouchRef.current;
+            if (last) {
+              azRef.current -= (snap.cx - last.cx) * ROTATE_SENSITIVITY;
+              pitchRef.current = clamp(
+                pitchRef.current - (snap.cy - last.cy) * PITCH_SENSITIVITY,
+                CAM_PITCH_MIN,
+                CAM_PITCH_MAX
+              );
+              if (snap.spread > 0 && last.spread > 0) {
+                distanceRef.current = clamp(
+                  distanceRef.current * (last.spread / snap.spread),
+                  CAM_DISTANCE_MIN,
+                  CAM_DISTANCE_MAX
+                );
+              }
+            }
+            lastTouchRef.current = snap;
             return;
           }
           const s = scaleRef.current || 1;
@@ -698,6 +770,7 @@ export default function GolfCourseView({
         onPanResponderRelease: (_evt, gesture) => {
           const mode = gestureModeRef.current;
           gestureModeRef.current = 'none';
+          lastTouchRef.current = null;
           if (mode !== 'aim') return;
           const s = scaleRef.current || 1;
           const mag = Math.hypot(gesture.dx / s, gesture.dy / s);
@@ -708,6 +781,7 @@ export default function GolfCourseView({
         },
         onPanResponderTerminate: () => {
           gestureModeRef.current = 'none';
+          lastTouchRef.current = null;
           setDrag(null);
         },
       }),
@@ -750,7 +824,12 @@ export default function GolfCourseView({
     <View style={styles.wrapper} onLayout={handleLayout}>
       <View style={styles.surface}>
         <Canvas shadows camera={{ fov: 55, near: 1, far: 2000 }}>
-            <FollowCamera focusRef={focusRef} azRef={azRef} />
+            <FollowCamera
+              focusRef={focusRef}
+              azRef={azRef}
+              pitchRef={pitchRef}
+              distanceRef={distanceRef}
+            />
             <SkyBackground />
             <fog attach="fog" args={[FOG_COLOR, 950, 1750]} />
             <ambientLight intensity={0.4} />

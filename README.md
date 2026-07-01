@@ -92,8 +92,15 @@ surface swallows touches before gesture-handler sees them, so the overlay
 (which works at the RN view layer) is what makes the gestures reliable on
 native. The overlay disambiguates two gestures per touch: **one finger on
 your turn** aims and putts (pull back, release); **two fingers — or one
-finger when it isn't your shot** — rotates the view. The mode is locked in on
-the first move of each gesture.
+finger when it isn't your shot** — moves the camera (horizontal drag orbits,
+vertical drag tilts, pinch zooms). The mode is locked in on the first move of
+each gesture, and orbit/tilt/zoom are driven incrementally from the touch
+centroid and spread so one- and two-finger drags share one code path.
+
+Because the GL `<Canvas>` can throw during teardown on native (a known
+react-three-fiber issue — "Cannot delete property `__r3f`"), an
+`AppErrorBoundary` wraps the navigator and auto-recovers from transient
+render/teardown errors instead of letting them crash the session.
 
 ### Environment / art
 
