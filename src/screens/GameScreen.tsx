@@ -111,7 +111,9 @@ export default function GameScreen({ route, navigation }: Props) {
       </View>
 
       <Text style={[styles.turnBanner, isMyTurn && styles.turnBannerActive]}>
-        {isMyTurn ? 'Your turn — drag back and release to putt' : `${activePlayerName}'s turn`}
+        {isMyTurn
+          ? 'Your turn — drag back to putt · two fingers to rotate'
+          : `${activePlayerName}'s turn · drag to look around`}
       </Text>
 
       <View style={styles.courseWrap}>

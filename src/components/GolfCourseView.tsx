@@ -39,6 +39,8 @@ const AIM_INDICATOR_LENGTH = 90;
 const BROADCAST_INTERVAL_MS = 70;
 const SINK_DROP_DEPTH = -3;
 const SINK_DROP_DURATION_MS = 220;
+// Radians of camera yaw per pixel of a rotate drag.
+const ROTATE_SENSITIVITY = 0.006;
 
 interface BallPosition {
   x: number;
@@ -75,6 +77,19 @@ function normalize(v: Vector2): Vector2 {
   const mag = Math.hypot(v.x, v.y);
   if (mag < 1e-6) return { x: 0, y: 0 };
   return { x: v.x / mag, y: v.y / mag };
+}
+
+/** Turn a screen-space pull-back drag into a world-space shot direction,
+ * relative to the current camera azimuth so "pull back" always launches the
+ * ball away from the camera regardless of how the view is rotated. Matches the
+ * FollowCamera ground axes (right = (cos az, sin az), back = (−sin az, cos az)).
+ * At az = 0 this reduces to the original screen-aligned mapping. */
+function aimDirFromDrag(dx: number, dy: number, az: number): Vector2 {
+  const cos = Math.cos(az);
+  const sin = Math.sin(az);
+  const worldX = dx * cos - dy * sin;
+  const worldZ = dx * sin + dy * cos;
+  return normalize({ x: -worldX, y: -worldZ });
 }
 
 function rampYawQuaternion(angleDeg: number | undefined): ThreeQuaternion {
@@ -324,21 +339,52 @@ function WaterSurface({
   );
 }
 
-function CameraRig({
-  position,
-  lookAt,
+const CAM_DISTANCE = 250;
+const CAM_HEIGHT = 175;
+const CAM_LOOK_HEIGHT = 10;
+const CAM_FOCUS_LERP = 0.16;
+
+/** Chase camera. Every frame it eases a smoothed focus point toward the live
+ * ball position (`focusRef`) and orbits the camera around it at the current
+ * azimuth (`azRef`, driven by the rotate gesture), always looking at the ball.
+ * So the view follows the ball as it rolls and the player can swing the
+ * camera around the shot. Ground axes are (x, z) = (game x, game y); azimuth 0
+ * places the camera on the +z (tee) side looking toward −z. */
+function FollowCamera({
+  focusRef,
+  azRef,
 }: {
-  position: [number, number, number];
-  lookAt: [number, number, number];
+  focusRef: React.MutableRefObject<Vector2>;
+  azRef: React.MutableRefObject<number>;
 }) {
   const { camera } = useThree();
-  useEffect(() => {
-    camera.position.set(position[0], position[1], position[2]);
-    camera.lookAt(lookAt[0], lookAt[1], lookAt[2]);
-    camera.updateProjectionMatrix();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera, ...position, ...lookAt]);
+  const smooth = useRef<Vector2 | null>(null);
+  useFrame(() => {
+    const f = focusRef.current;
+    if (!smooth.current) smooth.current = { x: f.x, y: f.y };
+    smooth.current.x += (f.x - smooth.current.x) * CAM_FOCUS_LERP;
+    smooth.current.y += (f.y - smooth.current.y) * CAM_FOCUS_LERP;
+    const az = azRef.current;
+    const backX = -Math.sin(az);
+    const backZ = Math.cos(az);
+    camera.position.set(
+      smooth.current.x + backX * CAM_DISTANCE,
+      CAM_HEIGHT,
+      smooth.current.y + backZ * CAM_DISTANCE
+    );
+    camera.lookAt(smooth.current.x, CAM_LOOK_HEIGHT, smooth.current.y);
+  });
   return null;
+}
+
+/** Azimuth (radians) that orients the camera to look from behind the tee
+ * straight toward the cup — the natural starting view for each hole. */
+function defaultAzimuth(tee: Vector2, cup: Vector2): number {
+  const fx = cup.x - tee.x;
+  const fy = cup.y - tee.y;
+  if (Math.abs(fx) < 1e-6 && Math.abs(fy) < 1e-6) return 0;
+  // forward = (sin az, -cos az) should match normalize(cup - tee).
+  return Math.atan2(fx, -fy);
 }
 
 /** Directional "sun" that casts shadows. Lives in its own component so it can
@@ -430,6 +476,13 @@ export default function GolfCourseView({
   const scaleRef = useRef(1);
   const shotStartPosRef = useRef<Vector2>({ x: myBall.x, y: myBall.y });
 
+  // Camera state lives in refs (not React state) so the per-frame FollowCamera
+  // can read them without re-rendering: `azRef` is the view azimuth the rotate
+  // gesture drives, `focusRef` is the ground point the camera chases (the live
+  // ball).
+  const azRef = useRef(defaultAzimuth(hole.tee, hole.cup));
+  const focusRef = useRef<Vector2>({ x: myBall.x, y: myBall.y });
+
   const [localBallPos, setLocalBallPos] = useState<BallPosition>({
     x: myBall.x,
     y: myBall.y,
@@ -446,6 +499,9 @@ export default function GolfCourseView({
   const canShootRef = useRef(canShoot);
   canShootRef.current = canShoot;
   const takeShotRef = useRef<(aimDir: Vector2, power: number) => void>(() => {});
+  // Per-gesture state for the shot/rotate PanResponder below.
+  const gestureModeRef = useRef<'none' | 'aim' | 'rotate'>('none');
+  const azAtGrantRef = useRef(0);
 
   // (Re)initialize the local physics world whenever it becomes this player's
   // turn, the hole changes, or a shot of theirs resolves (myBall.strokes ticks
@@ -470,6 +526,21 @@ export default function GolfCourseView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMyTurn, hole.index, myBall.strokes]);
+
+  // Reset the camera to the natural "behind the tee, facing the cup" angle
+  // whenever the hole changes (the player can then rotate freely from there).
+  useEffect(() => {
+    azRef.current = defaultAzimuth(hole.tee, hole.cup);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hole.index]);
+
+  // Keep the camera's chase target on the live ball: the locally simulated
+  // position while it's our shot, otherwise our last resting position.
+  useEffect(() => {
+    focusRef.current = isMyTurn
+      ? { x: localBallPos.x, y: localBallPos.y }
+      : { x: myBall.x, y: myBall.y };
+  }, [localBallPos, isMyTurn, myBall.x, myBall.y]);
 
   // Cup physics stays a heuristic trigger (not real pit geometry): once
   // checkSunk fires, physics simulation for this shot is done, and we ease
@@ -585,38 +656,60 @@ export default function GolfCourseView({
   }
   takeShotRef.current = takeShot;
 
-  // Shot input runs through React Native's PanResponder on a transparent
-  // overlay laid over the GL <Canvas> (see render below), NOT through
-  // react-native-gesture-handler wrapping the canvas. On a real device the
-  // expo-gl surface swallows touches before gesture-handler sees them, so the
-  // drag-to-putt gesture never fired — PanResponder works at the RN view
-  // layer and reliably receives touches on both native and web.
+  // Shot + camera input runs through React Native's PanResponder on a
+  // transparent overlay laid over the GL <Canvas> (see render below), NOT
+  // through react-native-gesture-handler wrapping the canvas. On a real device
+  // the expo-gl surface swallows touches before gesture-handler sees them, so
+  // the gesture never fired — PanResponder works at the RN view layer and
+  // reliably receives touches on both native and web.
+  //
+  // Two gestures share the surface, disambiguated per touch:
+  //   • one finger, on your turn → aim & putt (pull back, release)
+  //   • two fingers (or one finger when it isn't your shot) → rotate the view
+  // The mode is decided on the first move of each gesture and held until release.
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => isMyTurnRef.current && canShootRef.current,
-        onMoveShouldSetPanResponder: () => isMyTurnRef.current && canShootRef.current,
-        onPanResponderMove: (_evt, gesture) => {
+        // Claim every touch so the camera can be rotated at any time, not just
+        // on your turn.
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: () => {
+          gestureModeRef.current = 'none';
+          azAtGrantRef.current = azRef.current;
+        },
+        onPanResponderMove: (evt, gesture) => {
+          if (gestureModeRef.current === 'none') {
+            const twoFingers = evt.nativeEvent.touches.length >= 2;
+            const canAim = isMyTurnRef.current && canShootRef.current;
+            gestureModeRef.current = !twoFingers && canAim ? 'aim' : 'rotate';
+          }
+          if (gestureModeRef.current === 'rotate') {
+            azRef.current = azAtGrantRef.current - gesture.dx * ROTATE_SENSITIVITY;
+            return;
+          }
           const s = scaleRef.current || 1;
-          const dragVector = { x: gesture.dx / s, y: gesture.dy / s };
-          const aimDir = normalize({ x: -dragVector.x, y: -dragVector.y });
           const power = Math.max(
             0,
-            Math.min(1, Math.hypot(dragVector.x, dragVector.y) / MAX_DRAG_WORLD_UNITS)
+            Math.min(1, Math.hypot(gesture.dx / s, gesture.dy / s) / MAX_DRAG_WORLD_UNITS)
           );
-          setDrag({ aimDir, power });
+          setDrag({ aimDir: aimDirFromDrag(gesture.dx, gesture.dy, azRef.current), power });
         },
         onPanResponderRelease: (_evt, gesture) => {
+          const mode = gestureModeRef.current;
+          gestureModeRef.current = 'none';
+          if (mode !== 'aim') return;
           const s = scaleRef.current || 1;
-          const dragVector = { x: gesture.dx / s, y: gesture.dy / s };
-          const mag = Math.hypot(dragVector.x, dragVector.y);
+          const mag = Math.hypot(gesture.dx / s, gesture.dy / s);
           setDrag(null);
           if (mag < 8) return; // too small a flick, ignore
-          const aimDir = normalize({ x: -dragVector.x, y: -dragVector.y });
           const power = Math.max(0, Math.min(1, mag / MAX_DRAG_WORLD_UNITS));
-          takeShotRef.current(aimDir, power);
+          takeShotRef.current(aimDirFromDrag(gesture.dx, gesture.dy, azRef.current), power);
         },
-        onPanResponderTerminate: () => setDrag(null),
+        onPanResponderTerminate: () => {
+          gestureModeRef.current = 'none';
+          setDrag(null);
+        },
       }),
     []
   );
@@ -640,34 +733,6 @@ export default function GolfCourseView({
   const grassTexture = useMemo(() => makeGrassTexture(256, 448, [58, 128, 62], 9), []);
   const roughTexture = useMemo(() => makeRoughTexture(), []);
 
-  // Static per-hole camera: positioned behind the tee, elevated, looking at
-  // the tee-cup midpoint. Recomputed only when the hole (or its tee/cup)
-  // changes, since this view has no orbit/touch camera controls — those
-  // would conflict with the shot-aim pan gesture above.
-  const cameraConfig = useMemo(() => {
-    const dx = hole.cup.x - hole.tee.x;
-    const dz = hole.cup.y - hole.tee.y;
-    const len = Math.hypot(dx, dz) || 1;
-    const backX = -dx / len;
-    const backZ = -dz / len;
-    // Pulled back far enough that the tee (where the ball sits) stays inside
-    // the vertical FOV alongside the cup — see GolfCourseView camera-framing
-    // notes: a small pullback puts the tee at a much steeper depression
-    // angle than the (farther) look-at point, pushing it below the frustum.
-    const pullback = 260;
-    const position: [number, number, number] = [
-      hole.tee.x + backX * pullback,
-      80 + len * 0.5,
-      hole.tee.y + backZ * pullback,
-    ];
-    const lookAt: [number, number, number] = [
-      (hole.tee.x + hole.cup.x) / 2,
-      0,
-      (hole.tee.y + hole.cup.y) / 2,
-    ];
-    return { position, lookAt };
-  }, [hole.index, hole.tee.x, hole.tee.y, hole.cup.x, hole.cup.y]);
-
   // Mirrors physics.ts's boundaryWalls() geometry exactly (same footprint,
   // same height) since these are now real colliders, not decorative trim.
   const trimBars = [
@@ -685,7 +750,7 @@ export default function GolfCourseView({
     <View style={styles.wrapper} onLayout={handleLayout}>
       <View style={styles.surface}>
         <Canvas shadows camera={{ fov: 55, near: 1, far: 2000 }}>
-            <CameraRig position={cameraConfig.position} lookAt={cameraConfig.lookAt} />
+            <FollowCamera focusRef={focusRef} azRef={azRef} />
             <SkyBackground />
             <fog attach="fog" args={[FOG_COLOR, 950, 1750]} />
             <ambientLight intensity={0.4} />

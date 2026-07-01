@@ -76,14 +76,24 @@ to the 3D scene is:
   — sinking eases the ball's rendered height down over a few frames instead
   of teleporting it.
 
-The camera is a static per-hole rig (no orbit/touch controls, so it can't
-fight the shot-aim drag gesture), framing the tee-to-cup line and recomputed
-whenever the hole changes. Shot input is captured by a React Native
-`PanResponder` on a transparent overlay above the `<Canvas>` rather than
+The camera is a chase rig: each frame it eases a smoothed focus point toward
+the live ball position and orbits the camera around it at the current
+azimuth, so the view follows the ball as it rolls. Each hole starts facing
+from behind the tee toward the cup; the player can swing the view around with
+the rotate gesture. Because the camera can be rotated, shot aiming is
+computed *relative to the camera* — a straight pull-back always launches the
+ball away from the camera regardless of how the view is turned (at the
+default azimuth this is identical to a screen-aligned pull).
+
+Shot + camera input is captured by a React Native `PanResponder` on a
+transparent overlay above the `<Canvas>` rather than
 `react-native-gesture-handler` wrapping it — on a real device the `expo-gl`
 surface swallows touches before gesture-handler sees them, so the overlay
-(which works at the RN view layer) is what makes drag-to-putt reliable on
-native.
+(which works at the RN view layer) is what makes the gestures reliable on
+native. The overlay disambiguates two gestures per touch: **one finger on
+your turn** aims and putts (pull back, release); **two fingers — or one
+finger when it isn't your shot** — rotates the view. The mode is locked in on
+the first move of each gesture.
 
 ### Environment / art
 
