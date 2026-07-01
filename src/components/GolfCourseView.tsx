@@ -1,8 +1,14 @@
 import { Canvas, useThree } from '@react-three/fiber/native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { LayoutChangeEvent, StyleSheet, View } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { BufferAttribute, BufferGeometry, Quaternion as ThreeQuaternion, Vector3 as ThreeVector3 } from 'three';
+import { LayoutChangeEvent, PanResponder, StyleSheet, View } from 'react-native';
+import {
+  BufferAttribute,
+  BufferGeometry,
+  DirectionalLight,
+  Object3D,
+  Quaternion as ThreeQuaternion,
+  Vector3 as ThreeVector3,
+} from 'three';
 import {
   applyShot,
   BALL_RADIUS,
@@ -115,6 +121,17 @@ const FLAGPOLE_HEIGHT = 38;
 const WATER_Y = 0.6;
 const SCENE_BACKGROUND = '#bfe6cf';
 
+// Key "sun" light, positioned high and off to one corner of the course so it
+// casts long, readable shadows across the play surface. The shadow camera is
+// an orthographic frustum sized to comfortably cover the whole course from
+// the light's point of view (course is COURSE_WIDTH x COURSE_HEIGHT, centred
+// at its midpoint, which is where the light is aimed).
+const SUN_POSITION: [number, number, number] = [
+  COURSE_WIDTH / 2 - 150,
+  380,
+  COURSE_HEIGHT / 2 - 280,
+];
+
 function CameraRig({
   position,
   lookAt,
@@ -130,6 +147,41 @@ function CameraRig({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera, ...position, ...lookAt]);
   return null;
+}
+
+/** Directional "sun" that casts shadows. Lives in its own component so it can
+ * point its shadow-casting target at the centre of the course via a ref once
+ * mounted (three.js directional lights shadow toward their `target`, which
+ * defaults to the world origin — wrong for our off-origin course). */
+function ShadowLight() {
+  const lightRef = useRef<DirectionalLight>(null);
+  const targetRef = useRef<Object3D>(null);
+  useEffect(() => {
+    if (lightRef.current && targetRef.current) {
+      lightRef.current.target = targetRef.current;
+      lightRef.current.target.updateMatrixWorld();
+    }
+  }, []);
+  return (
+    <>
+      <directionalLight
+        ref={lightRef}
+        castShadow
+        position={SUN_POSITION}
+        intensity={1.15}
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-camera-near={1}
+        shadow-camera-far={1400}
+        shadow-camera-left={-460}
+        shadow-camera-right={460}
+        shadow-camera-top={460}
+        shadow-camera-bottom={-460}
+        shadow-bias={-0.0005}
+      />
+      <object3D ref={targetRef} position={[COURSE_WIDTH / 2, 0, COURSE_HEIGHT / 2]} />
+    </>
+  );
 }
 
 /** A thin bar from `ballX/Z + dir*from` to `ballX/Z + dir*to`, used for the
@@ -193,6 +245,15 @@ export default function GolfCourseView({
   });
   const [drag, setDrag] = useState<{ aimDir: Vector2; power: number } | null>(null);
   const [canShoot, setCanShoot] = useState(true);
+
+  // The PanResponder is created once (see below) but its callbacks must read
+  // the *latest* turn/shoot state and call the latest takeShot, so we mirror
+  // them into refs that we keep fresh on every render.
+  const isMyTurnRef = useRef(isMyTurn);
+  isMyTurnRef.current = isMyTurn;
+  const canShootRef = useRef(canShoot);
+  canShootRef.current = canShoot;
+  const takeShotRef = useRef<(aimDir: Vector2, power: number) => void>(() => {});
 
   // (Re)initialize the local physics world whenever it becomes this player's
   // turn, the hole changes, or a shot of theirs resolves (myBall.strokes ticks
@@ -330,33 +391,42 @@ export default function GolfCourseView({
     lastFrameRef.current = null;
     rafRef.current = requestAnimationFrame(stepLoop);
   }
+  takeShotRef.current = takeShot;
 
-  const panGesture = useMemo(
+  // Shot input runs through React Native's PanResponder on a transparent
+  // overlay laid over the GL <Canvas> (see render below), NOT through
+  // react-native-gesture-handler wrapping the canvas. On a real device the
+  // expo-gl surface swallows touches before gesture-handler sees them, so the
+  // drag-to-putt gesture never fired — PanResponder works at the RN view
+  // layer and reliably receives touches on both native and web.
+  const panResponder = useMemo(
     () =>
-      Gesture.Pan()
-        .enabled(isMyTurn && canShoot)
-        .onUpdate((e) => {
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => isMyTurnRef.current && canShootRef.current,
+        onMoveShouldSetPanResponder: () => isMyTurnRef.current && canShootRef.current,
+        onPanResponderMove: (_evt, gesture) => {
           const s = scaleRef.current || 1;
-          const dragVector = { x: e.translationX / s, y: e.translationY / s };
+          const dragVector = { x: gesture.dx / s, y: gesture.dy / s };
           const aimDir = normalize({ x: -dragVector.x, y: -dragVector.y });
           const power = Math.max(
             0,
             Math.min(1, Math.hypot(dragVector.x, dragVector.y) / MAX_DRAG_WORLD_UNITS)
           );
           setDrag({ aimDir, power });
-        })
-        .onEnd((e) => {
+        },
+        onPanResponderRelease: (_evt, gesture) => {
           const s = scaleRef.current || 1;
-          const dragVector = { x: e.translationX / s, y: e.translationY / s };
+          const dragVector = { x: gesture.dx / s, y: gesture.dy / s };
           const mag = Math.hypot(dragVector.x, dragVector.y);
           setDrag(null);
           if (mag < 8) return; // too small a flick, ignore
           const aimDir = normalize({ x: -dragVector.x, y: -dragVector.y });
           const power = Math.max(0, Math.min(1, mag / MAX_DRAG_WORLD_UNITS));
-          takeShot(aimDir, power);
-        }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isMyTurn, canShoot, hole.index]
+          takeShotRef.current(aimDir, power);
+        },
+        onPanResponderTerminate: () => setDrag(null),
+      }),
+    []
   );
 
   function handleLayout(e: LayoutChangeEvent) {
@@ -417,24 +487,34 @@ export default function GolfCourseView({
 
   return (
     <View style={styles.wrapper} onLayout={handleLayout}>
-      <GestureDetector gesture={panGesture}>
-        <View style={styles.surface}>
-          <Canvas camera={{ fov: 55, near: 1, far: 2000 }}>
+      <View style={styles.surface}>
+        <Canvas shadows camera={{ fov: 55, near: 1, far: 2000 }}>
             <CameraRig position={cameraConfig.position} lookAt={cameraConfig.lookAt} />
             <color attach="background" args={[SCENE_BACKGROUND]} />
-            <ambientLight intensity={0.65} />
-            <directionalLight position={[120, 220, 80]} intensity={0.9} />
+            <fog attach="fog" args={[SCENE_BACKGROUND, 900, 1600]} />
+            <ambientLight intensity={0.35} />
+            <hemisphereLight args={['#d4f0e0', '#2b5d3a', 0.55]} />
+            <ShadowLight />
 
             {/* ground */}
-            <mesh position={[COURSE_WIDTH / 2, 0, COURSE_HEIGHT / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+            <mesh
+              receiveShadow
+              position={[COURSE_WIDTH / 2, 0, COURSE_HEIGHT / 2]}
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
               <planeGeometry args={[COURSE_WIDTH, COURSE_HEIGHT]} />
-              <meshStandardMaterial color="#2E8B4F" />
+              <meshStandardMaterial color="#2E8B4F" roughness={0.95} metalness={0} />
             </mesh>
             {/* boundary trim */}
             {trimBars.map((bar, i) => (
-              <mesh key={`trim-${i}`} position={bar.pos as unknown as [number, number, number]}>
+              <mesh
+                key={`trim-${i}`}
+                castShadow
+                receiveShadow
+                position={bar.pos as unknown as [number, number, number]}
+              >
                 <boxGeometry args={bar.size as unknown as [number, number, number]} />
-                <meshStandardMaterial color="#256B3E" />
+                <meshStandardMaterial color="#256B3E" roughness={0.85} />
               </mesh>
             ))}
 
@@ -459,11 +539,13 @@ export default function GolfCourseView({
             {hole.ramps.map((r, i) => (
               <mesh
                 key={`ramp-${i}`}
+                castShadow
+                receiveShadow
                 position={[r.x, 0, r.y]}
                 quaternion={rampYawQuaternion(r.angle)}
                 geometry={rampGeometries[i]}
               >
-                <meshStandardMaterial color="#E8B23A" />
+                <meshStandardMaterial color="#E8B23A" roughness={0.7} />
               </mesh>
             ))}
 
@@ -473,20 +555,27 @@ export default function GolfCourseView({
               const meshHeight = isRock ? ROCK_MESH_HEIGHT : WALL_MESH_HEIGHT;
               if (obstacle.kind === 'circle') {
                 return (
-                  <mesh key={i} position={[obstacle.x, meshHeight / 2, obstacle.y]}>
+                  <mesh
+                    key={i}
+                    castShadow
+                    receiveShadow
+                    position={[obstacle.x, meshHeight / 2, obstacle.y]}
+                  >
                     <cylinderGeometry args={[obstacle.radius, obstacle.radius, meshHeight, 20]} />
-                    <meshStandardMaterial color={color} />
+                    <meshStandardMaterial color={color} roughness={0.9} />
                   </mesh>
                 );
               }
               return (
                 <mesh
                   key={i}
+                  castShadow
+                  receiveShadow
                   position={[obstacle.x, meshHeight / 2, obstacle.y]}
                   rotation={[0, degToRotY(obstacle.angle), 0]}
                 >
                   <boxGeometry args={[obstacle.width, meshHeight, obstacle.height]} />
-                  <meshStandardMaterial color={color} />
+                  <meshStandardMaterial color={color} roughness={0.8} />
                 </mesh>
               );
             })}
@@ -500,11 +589,11 @@ export default function GolfCourseView({
               <meshStandardMaterial color="#0B3D24" />
             </mesh>
             {/* flagpole + flag */}
-            <mesh position={[hole.cup.x, FLAGPOLE_HEIGHT / 2, hole.cup.y]}>
+            <mesh castShadow position={[hole.cup.x, FLAGPOLE_HEIGHT / 2, hole.cup.y]}>
               <cylinderGeometry args={[0.6, 0.6, FLAGPOLE_HEIGHT, 8]} />
               <meshStandardMaterial color="#ffffff" />
             </mesh>
-            <mesh position={[hole.cup.x + 8, FLAGPOLE_HEIGHT - 5, hole.cup.y]}>
+            <mesh castShadow position={[hole.cup.x + 8, FLAGPOLE_HEIGHT - 5, hole.cup.y]}>
               <boxGeometry args={[16, 11, 0.5]} />
               <meshStandardMaterial color={accentColor} />
             </mesh>
@@ -513,17 +602,17 @@ export default function GolfCourseView({
             {otherBalls
               .filter((o) => !o.ball.sunk)
               .map((o) => (
-                <mesh key={o.id} position={[o.ball.x, o.ball.z, o.ball.y]}>
-                  <sphereGeometry args={[BALL_RADIUS, 16, 16]} />
-                  <meshStandardMaterial color={o.color} />
+                <mesh castShadow key={o.id} position={[o.ball.x, o.ball.z, o.ball.y]}>
+                  <sphereGeometry args={[BALL_RADIUS, 24, 24]} />
+                  <meshStandardMaterial color={o.color} roughness={0.35} metalness={0.1} />
                 </mesh>
               ))}
 
             {/* my ball */}
             {showMyBall && (
-              <mesh position={[myRenderPos.x, myRenderPos.z, myRenderPos.y]}>
-                <sphereGeometry args={[BALL_RADIUS, 16, 16]} />
-                <meshStandardMaterial color={myColor} />
+              <mesh castShadow position={[myRenderPos.x, myRenderPos.z, myRenderPos.y]}>
+                <sphereGeometry args={[BALL_RADIUS, 24, 24]} />
+                <meshStandardMaterial color={myColor} roughness={0.35} metalness={0.1} />
               </mesh>
             )}
 
@@ -552,8 +641,12 @@ export default function GolfCourseView({
               </>
             )}
           </Canvas>
+          {/* Transparent touch overlay on top of the GL canvas. It captures
+              the drag-to-putt gesture via PanResponder (RN view layer), which
+              — unlike gesture-handler wrapping the canvas — reliably receives
+              touches over the expo-gl surface on a real device. */}
+          <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers} />
         </View>
-      </GestureDetector>
     </View>
   );
 }
