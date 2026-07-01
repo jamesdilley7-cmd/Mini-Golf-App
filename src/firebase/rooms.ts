@@ -235,6 +235,12 @@ export async function resolveShot({
       updates['activePlayerId'] = null;
     } else {
       const tee = course.holes[nextHoleIndex].tee;
+      // We're replacing the entire balls map for the next hole. Drop the
+      // per-player ball write added above: Firebase rejects a multi-path
+      // update where one path (`balls`) is an ancestor of another
+      // (`balls/<id>`), and that rejection was being silently swallowed —
+      // leaving the game stuck on the completed hole.
+      delete updates[`balls/${playerId}`];
       updates['holeIndex'] = nextHoleIndex;
       updates['balls'] = ballsForHole(room.order, tee.x, tee.y);
       updates['activePlayerId'] = room.order[nextHoleIndex % room.order.length];
