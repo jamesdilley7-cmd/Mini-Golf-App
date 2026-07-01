@@ -78,7 +78,32 @@ to the 3D scene is:
 
 The camera is a static per-hole rig (no orbit/touch controls, so it can't
 fight the shot-aim drag gesture), framing the tee-to-cup line and recomputed
-whenever the hole changes.
+whenever the hole changes. Shot input is captured by a React Native
+`PanResponder` on a transparent overlay above the `<Canvas>` rather than
+`react-native-gesture-handler` wrapping it — on a real device the `expo-gl`
+surface swallows touches before gesture-handler sees them, so the overlay
+(which works at the RN view layer) is what makes drag-to-putt reliable on
+native.
+
+### Environment / art
+
+All scenery is generated numerically at runtime — Expo Go can't easily bundle
+image assets and native RN has no `<canvas>`, so every "texture" is a
+procedural `DataTexture` (cross-platform, asset-free):
+
+- **Turf**: a grass texture with fine per-blade noise and broad alternating
+  *mowing stripes* down the fairway, mapped 1:1 to the course so the stripes
+  span the whole hole with no seams.
+- **Rough**: a darker tiled grass on a large surrounding plane so the course
+  sits in an endless field instead of floating; distance fog (coloured to the
+  horizon) blends it into the sky.
+- **Sky**: a vertical gradient `DataTexture` set as the scene background.
+- **Water**: an animated `ShaderMaterial` (two crossing sine wavelets + value
+  noise advanced by a `uTime` uniform each frame) — cheap, needs no
+  reflection pass, and reads clearly as rippling water.
+- **Lighting/shadows**: a shadow-casting directional "sun" aimed at the course
+  centre, a hemisphere fill light, and soft ambient; meshes cast/receive
+  shadow maps (`<Canvas shadows>`).
 
 If you're tweaking gameplay, edit `physics.ts` / `courses/*` as before and
 the 3D view will reflect it automatically. If you're tweaking visuals (mesh

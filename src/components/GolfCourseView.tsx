@@ -1,12 +1,19 @@
-import { Canvas, useThree } from '@react-three/fiber/native';
+import { Canvas, useFrame, useThree } from '@react-three/fiber/native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { LayoutChangeEvent, PanResponder, StyleSheet, View } from 'react-native';
 import {
   BufferAttribute,
   BufferGeometry,
+  ClampToEdgeWrapping,
+  DataTexture,
   DirectionalLight,
+  DoubleSide,
   Object3D,
   Quaternion as ThreeQuaternion,
+  RepeatWrapping,
+  RGBAFormat,
+  ShaderMaterial,
+  SRGBColorSpace,
   Vector3 as ThreeVector3,
 } from 'three';
 import {
@@ -119,7 +126,6 @@ function buildRampWedgeGeometry(width: number, footLen: number, rise: number): B
 // with — see the README's "real 3D physics" note.
 const FLAGPOLE_HEIGHT = 38;
 const WATER_Y = 0.6;
-const SCENE_BACKGROUND = '#bfe6cf';
 
 // Key "sun" light, positioned high and off to one corner of the course so it
 // casts long, readable shadows across the play surface. The shadow camera is
@@ -131,6 +137,192 @@ const SUN_POSITION: [number, number, number] = [
   380,
   COURSE_HEIGHT / 2 - 280,
 ];
+
+// ---------------------------------------------------------------------------
+// Procedural textures. Expo Go can't bundle image assets easily and native RN
+// has no <canvas>, so all "art" is generated numerically into DataTextures at
+// runtime — cross-platform (native + web) and asset-free.
+// ---------------------------------------------------------------------------
+
+function fract(n: number) {
+  return n - Math.floor(n);
+}
+// Cheap deterministic value hash in [0,1).
+function hash2(x: number, y: number) {
+  return fract(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453);
+}
+function clampByte(v: number) {
+  return Math.max(0, Math.min(255, Math.round(v)));
+}
+
+/** Grassy turf texture: a base green modulated by fine per-texel noise plus
+ * broad "mowing stripes" (alternating light/dark bands down the fairway) that
+ * read instantly as a manicured golf green. Mapped 1:1 to the course (no
+ * tiling) so the stripes span the whole hole and there are no seams. */
+function makeGrassTexture(
+  width: number,
+  height: number,
+  base: [number, number, number],
+  stripes: number
+): DataTexture {
+  const data = new Uint8Array(width * height * 4);
+  for (let j = 0; j < height; j++) {
+    const v = j / height;
+    const band = Math.floor(v * stripes) % 2 === 0 ? 1.06 : 0.92;
+    for (let i = 0; i < width; i++) {
+      const speck = 0.86 + hash2(i, j) * 0.28;
+      const bladeRnd = hash2(i * 3.1 + 7.0, j * 1.7 + 2.0);
+      const blade = bladeRnd > 0.975 ? 1.3 : bladeRnd < 0.03 ? 0.78 : 1.0;
+      const m = band * speck * blade;
+      const idx = (j * width + i) * 4;
+      data[idx] = clampByte(base[0] * m);
+      data[idx + 1] = clampByte(base[1] * m);
+      data[idx + 2] = clampByte(base[2] * m);
+      data[idx + 3] = 255;
+    }
+  }
+  const tex = new DataTexture(data, width, height, RGBAFormat);
+  tex.wrapS = ClampToEdgeWrapping;
+  tex.wrapT = ClampToEdgeWrapping;
+  tex.colorSpace = SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Darker, tiled grass for the wide "rough" that surrounds the course so the
+ * play area sits in an endless field rather than floating in space. */
+function makeRoughTexture(): DataTexture {
+  const w = 64;
+  const h = 64;
+  const base: [number, number, number] = [34, 78, 40];
+  const data = new Uint8Array(w * h * 4);
+  for (let j = 0; j < h; j++) {
+    for (let i = 0; i < w; i++) {
+      const n = hash2(i, j);
+      const m = 0.82 + n * 0.36;
+      const idx = (j * w + i) * 4;
+      data[idx] = clampByte(base[0] * m);
+      data[idx + 1] = clampByte(base[1] * m);
+      data[idx + 2] = clampByte(base[2] * m);
+      data[idx + 3] = 255;
+    }
+  }
+  const tex = new DataTexture(data, w, h, RGBAFormat);
+  tex.wrapS = RepeatWrapping;
+  tex.wrapT = RepeatWrapping;
+  tex.repeat.set(34, 40);
+  tex.colorSpace = SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Vertical sky gradient (deep blue at top → hazy pale at the horizon) used as
+ * the scene background; the horizon colour matches the fog so distant rough
+ * fades seamlessly into the sky. */
+const HORIZON_COLOR: [number, number, number] = [212, 233, 226];
+function makeSkyTexture(): DataTexture {
+  const h = 128;
+  const top: [number, number, number] = [104, 176, 232];
+  const data = new Uint8Array(1 * h * 4);
+  for (let j = 0; j < h; j++) {
+    // texture row 0 is bottom of the screen → horizon; top row → sky.
+    const t = j / (h - 1);
+    const idx = j * 4;
+    data[idx] = clampByte(HORIZON_COLOR[0] + (top[0] - HORIZON_COLOR[0]) * t);
+    data[idx + 1] = clampByte(HORIZON_COLOR[1] + (top[1] - HORIZON_COLOR[1]) * t);
+    data[idx + 2] = clampByte(HORIZON_COLOR[2] + (top[2] - HORIZON_COLOR[2]) * t);
+    data[idx + 3] = 255;
+  }
+  const tex = new DataTexture(data, 1, h, RGBAFormat);
+  tex.colorSpace = SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+const FOG_COLOR = `rgb(${HORIZON_COLOR[0]}, ${HORIZON_COLOR[1]}, ${HORIZON_COLOR[2]})`;
+
+function SkyBackground() {
+  const { scene } = useThree();
+  const tex = useMemo(() => makeSkyTexture(), []);
+  useEffect(() => {
+    const prev = scene.background;
+    scene.background = tex;
+    return () => {
+      scene.background = prev;
+    };
+  }, [scene, tex]);
+  return null;
+}
+
+const WATER_VERT = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const WATER_FRAG = `
+  precision mediump float;
+  uniform float uTime;
+  uniform vec3 uDeep;
+  uniform vec3 uShallow;
+  varying vec2 vUv;
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float noise(vec2 p){
+    vec2 i = floor(p); vec2 f = fract(p);
+    float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+  }
+  void main(){
+    vec2 uv = vUv;
+    float w1 = sin((uv.x * 11.0 + uv.y * 5.0) + uTime * 1.6);
+    float w2 = sin((uv.x * 7.0 - uv.y * 13.0) - uTime * 1.15);
+    float ripple = 0.5 + 0.25 * (w1 + w2);
+    float n = noise(uv * 9.0 + vec2(uTime * 0.18, uTime * 0.12));
+    vec3 col = mix(uDeep, uShallow, clamp(ripple * 0.6 + n * 0.45, 0.0, 1.0));
+    float hi = smoothstep(0.9, 1.0, ripple * 0.5 + n * 0.5);
+    col += hi * 0.35;
+    gl_FragColor = vec4(col, 0.88);
+  }
+`;
+
+/** Animated stylised water. A ShaderMaterial with two crossing sine wavelets
+ * plus value noise, advanced by a uTime uniform every frame — cheap, needs no
+ * reflection pass, and reads clearly as rippling water. */
+function WaterSurface({
+  position,
+  rotation,
+  children,
+}: {
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  children: React.ReactNode;
+}) {
+  const material = useMemo(
+    () =>
+      new ShaderMaterial({
+        vertexShader: WATER_VERT,
+        fragmentShader: WATER_FRAG,
+        transparent: true,
+        side: DoubleSide,
+        uniforms: {
+          uTime: { value: 0 },
+          uDeep: { value: new ThreeVector3(0.05, 0.34, 0.6) },
+          uShallow: { value: new ThreeVector3(0.28, 0.7, 0.85) },
+        },
+      }),
+    []
+  );
+  useFrame((_, delta) => {
+    material.uniforms.uTime.value += delta;
+  });
+  return (
+    <mesh position={position} rotation={rotation} material={material}>
+      {children}
+    </mesh>
+  );
+}
 
 function CameraRig({
   position,
@@ -444,6 +636,10 @@ export default function GolfCourseView({
     [hole]
   );
 
+  // Procedural turf/rough textures, built once and reused across holes.
+  const grassTexture = useMemo(() => makeGrassTexture(256, 448, [58, 128, 62], 9), []);
+  const roughTexture = useMemo(() => makeRoughTexture(), []);
+
   // Static per-hole camera: positioned behind the tee, elevated, looking at
   // the tee-cup midpoint. Recomputed only when the hole (or its tee/cup)
   // changes, since this view has no orbit/touch camera controls — those
@@ -490,20 +686,30 @@ export default function GolfCourseView({
       <View style={styles.surface}>
         <Canvas shadows camera={{ fov: 55, near: 1, far: 2000 }}>
             <CameraRig position={cameraConfig.position} lookAt={cameraConfig.lookAt} />
-            <color attach="background" args={[SCENE_BACKGROUND]} />
-            <fog attach="fog" args={[SCENE_BACKGROUND, 900, 1600]} />
-            <ambientLight intensity={0.35} />
-            <hemisphereLight args={['#d4f0e0', '#2b5d3a', 0.55]} />
+            <SkyBackground />
+            <fog attach="fog" args={[FOG_COLOR, 950, 1750]} />
+            <ambientLight intensity={0.4} />
+            <hemisphereLight args={['#bfe0ff', '#2b5d3a', 0.55]} />
             <ShadowLight />
 
-            {/* ground */}
+            {/* wide surrounding rough so the course sits in an endless field */}
+            <mesh
+              receiveShadow
+              position={[COURSE_WIDTH / 2, -1.2, COURSE_HEIGHT / 2]}
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              <planeGeometry args={[2400, 2800]} />
+              <meshStandardMaterial map={roughTexture} roughness={1} metalness={0} />
+            </mesh>
+
+            {/* course green (manicured turf with mowing stripes) */}
             <mesh
               receiveShadow
               position={[COURSE_WIDTH / 2, 0, COURSE_HEIGHT / 2]}
               rotation={[-Math.PI / 2, 0, 0]}
             >
               <planeGeometry args={[COURSE_WIDTH, COURSE_HEIGHT]} />
-              <meshStandardMaterial color="#2E8B4F" roughness={0.95} metalness={0} />
+              <meshStandardMaterial map={grassTexture} roughness={0.95} metalness={0} />
             </mesh>
             {/* boundary trim */}
             {trimBars.map((bar, i) => (
@@ -520,19 +726,21 @@ export default function GolfCourseView({
 
             {hole.water.map((w, i) =>
               w.kind === 'circle' ? (
-                <mesh key={`water-${i}`} position={[w.x, WATER_Y, w.y]} rotation={[-Math.PI / 2, 0, 0]}>
-                  <circleGeometry args={[w.radius, 28]} />
-                  <meshStandardMaterial color="#2C7BC9" transparent opacity={0.82} />
-                </mesh>
+                <WaterSurface
+                  key={`water-${i}`}
+                  position={[w.x, WATER_Y, w.y]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                >
+                  <circleGeometry args={[w.radius, 40]} />
+                </WaterSurface>
               ) : (
-                <mesh
+                <WaterSurface
                   key={`water-${i}`}
                   position={[w.x, WATER_Y, w.y]}
                   rotation={[-Math.PI / 2, degToRotY(w.angle), 0]}
                 >
                   <planeGeometry args={[w.width, w.height]} />
-                  <meshStandardMaterial color="#2C7BC9" transparent opacity={0.82} />
-                </mesh>
+                </WaterSurface>
               )
             )}
 
