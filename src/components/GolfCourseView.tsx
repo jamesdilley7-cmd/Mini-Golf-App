@@ -9,7 +9,6 @@ import {
   DirectionalLight,
   DoubleSide,
   Object3D,
-  Quaternion as ThreeQuaternion,
   RepeatWrapping,
   RGBAFormat,
   ShaderMaterial,
@@ -121,10 +120,6 @@ function aimDirFromDrag(dx: number, dy: number, az: number): Vector2 {
   const worldX = dx * cos - dy * sin;
   const worldZ = dx * sin + dy * cos;
   return normalize({ x: -worldX, y: -worldZ });
-}
-
-function rampYawQuaternion(angleDeg: number | undefined): ThreeQuaternion {
-  return new ThreeQuaternion().setFromAxisAngle(new ThreeVector3(0, 1, 0), degToRotY(angleDeg));
 }
 
 /** Builds the exact same wedge shape as physics.ts's rampToBody
@@ -894,7 +889,7 @@ export default function GolfCourseView({
                 castShadow
                 receiveShadow
                 position={[r.x, 0, r.y]}
-                quaternion={rampYawQuaternion(r.angle)}
+                rotation={[0, degToRotY(r.angle), 0]}
                 geometry={rampGeometries[i]}
               >
                 <meshStandardMaterial color="#E8B23A" roughness={0.7} />

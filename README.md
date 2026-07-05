@@ -70,7 +70,13 @@ to the 3D scene is:
   geometry can't drift apart. A ramp's collider and mesh are both a wedge
   (entry edge at ground level tapering up to a sloped exit edge at height
   `rise`) — not a tilted box — so the ball rolls smoothly onto the slope
-  instead of bouncing off an end-cap.
+  instead of bouncing off an end-cap. Its yaw is applied as a plain
+  `rotation={[0, y, 0]}` array — like every other rotated mesh in the scene —
+  rather than a constructed `THREE.Quaternion` prop; passing a live Quaternion
+  instance routed through a different, constructor-identity-dependent code
+  path in r3f's prop diffing that crashed natively ("Cannot assign to
+  read-only property 'quaternion'") when a ramp mesh mounted/unmounted across
+  a hole change.
 - The cup is still a heuristic trigger (distance + speed check, now also
   requiring the ball be near ground height), not real pit collision geometry
   — sinking eases the ball's rendered height down over a few frames instead
