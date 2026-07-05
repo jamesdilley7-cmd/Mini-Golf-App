@@ -1,6 +1,6 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber/native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { LayoutChangeEvent, PanResponder, StyleSheet, View } from 'react-native';
+import { LayoutChangeEvent, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   BufferAttribute,
   BufferGeometry,
@@ -532,6 +532,11 @@ export default function GolfCourseView({
   });
   const [drag, setDrag] = useState<{ aimDir: Vector2; power: number } | null>(null);
   const [canShoot, setCanShoot] = useState(true);
+  // Explicit "look around" toggle: while on, a single finger always moves the
+  // camera (orbit + tilt) instead of aiming, even on your turn. Added because
+  // the two-finger camera gesture is awkward (or unreliable) to reach for
+  // mid-shot — this gives a one-finger way to look around on demand instead.
+  const [cameraMode, setCameraMode] = useState(false);
 
   // The PanResponder is created once (see below) but its callbacks must read
   // the *latest* turn/shoot state and call the latest takeShot, so we mirror
@@ -540,6 +545,8 @@ export default function GolfCourseView({
   isMyTurnRef.current = isMyTurn;
   const canShootRef = useRef(canShoot);
   canShootRef.current = canShoot;
+  const cameraModeRef = useRef(cameraMode);
+  cameraModeRef.current = cameraMode;
   const takeShotRef = useRef<(aimDir: Vector2, power: number) => void>(() => {});
   // Per-gesture state for the shot/rotate PanResponder below.
   const gestureModeRef = useRef<'none' | 'aim' | 'rotate'>('none');
@@ -727,7 +734,7 @@ export default function GolfCourseView({
           const touches = evt.nativeEvent.touches ?? [];
           if (gestureModeRef.current === 'none') {
             const twoFingers = touches.length >= 2;
-            const canAim = isMyTurnRef.current && canShootRef.current;
+            const canAim = !cameraModeRef.current && isMyTurnRef.current && canShootRef.current;
             gestureModeRef.current = !twoFingers && canAim ? 'aim' : 'rotate';
             lastTouchRef.current = null;
           }
@@ -993,6 +1000,19 @@ export default function GolfCourseView({
               — unlike gesture-handler wrapping the canvas — reliably receives
               touches over the expo-gl surface on a real device. */}
           <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers} />
+          {/* Rendered after (so on top of) the touch overlay: RN's responder
+              negotiation gives a touch to the deepest/topmost view under it
+              first, so taps here reach this button instead of the overlay's
+              PanResponder, while drags everywhere else still reach it. */}
+          <Pressable
+            style={[styles.cameraToggle, cameraMode && styles.cameraToggleActive]}
+            onPress={() => setCameraMode((v) => !v)}
+            hitSlop={8}
+          >
+            <Text style={[styles.cameraToggleText, cameraMode && styles.cameraToggleTextActive]}>
+              {cameraMode ? 'Done looking' : 'Look around'}
+            </Text>
+          </Pressable>
         </View>
     </View>
   );
@@ -1007,5 +1027,25 @@ const styles = StyleSheet.create({
   },
   surface: {
     flex: 1,
+  },
+  cameraToggle: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    backgroundColor: '#00000099',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  cameraToggleActive: {
+    backgroundColor: '#FFD166',
+  },
+  cameraToggleText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  cameraToggleTextActive: {
+    color: '#3D2A00',
   },
 });

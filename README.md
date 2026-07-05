@@ -103,6 +103,14 @@ vertical drag tilts, pinch zooms). The mode is locked in on the first move of
 each gesture, and orbit/tilt/zoom are driven incrementally from the touch
 centroid and spread so one- and two-finger drags share one code path.
 
+A **"Look around" toggle button** (top-right of the course view) is the
+explicit alternative to the two-finger camera gesture: tap it and a single
+finger always moves the camera (orbit + tilt; pinch still zooms) instead of
+aiming, even on your turn — tap "Done looking" to go back to aiming. It
+exists because reaching for a second finger mid-shot is awkward one-handed;
+the button gives a one-finger way to look around on demand without touching
+the two-finger path at all.
+
 Because the GL `<Canvas>` can throw during teardown on native (a known
 react-three-fiber issue — "Cannot delete property `__r3f`"), an
 `AppErrorBoundary` wraps the navigator and auto-recovers from transient
